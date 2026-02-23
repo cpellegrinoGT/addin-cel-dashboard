@@ -126,11 +126,6 @@ geotab.addin.celDashboard = function () {
         from.setDate(from.getDate() - 7);
         from.setHours(0, 0, 0, 0);
         break;
-      case "90days":
-        from = new Date(now);
-        from.setDate(from.getDate() - 90);
-        from.setHours(0, 0, 0, 0);
-        break;
       case "custom":
         from = els.fromDate.value ? new Date(els.fromDate.value + "T00:00:00") : new Date(now.getTime() - 30 * 86400000);
         to = els.toDate.value ? new Date(els.toDate.value + "T23:59:59") : to;
