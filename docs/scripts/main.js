@@ -1323,7 +1323,8 @@ geotab.addin.celDashboard = function () {
       celData.deviceDrivenDays = metrics.deviceDrivenDays;
       celData.deviceCelDays = metrics.deviceCelDays;
 
-      // Build trend buckets
+      // Auto-select granularity based on date range, then build trend buckets
+      autoSelectGranularity(dateRange);
       celData.trendBuckets = buildTrendBuckets(celData.celFaults, trips, devices, currentGranularity);
 
       // Build table rows
@@ -1404,6 +1405,25 @@ geotab.addin.celDashboard = function () {
     celData.trendBuckets = buildTrendBuckets(celData.celFaults, celData.trips, devices, currentGranularity);
     renderChart();
     renderKpis();
+  }
+
+  function autoSelectGranularity(dateRange) {
+    var fromMs = new Date(dateRange.from).getTime();
+    var toMs = new Date(dateRange.to).getTime();
+    var days = Math.round((toMs - fromMs) / 86400000);
+
+    if (days <= 14) {
+      currentGranularity = "day";
+    } else if (days <= 60) {
+      currentGranularity = "week";
+    } else {
+      currentGranularity = "month";
+    }
+
+    // Update button state to match
+    document.querySelectorAll(".cel-gran-btn").forEach(function (b) {
+      b.classList.toggle("active", b.dataset.gran === currentGranularity);
+    });
   }
 
   function onRegionChange() {
