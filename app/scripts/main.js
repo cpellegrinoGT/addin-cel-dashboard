@@ -437,34 +437,29 @@ geotab.addin.celDashboard = function () {
     });
   }
 
-  function populateRegionDropdown() {
-    var current = els.region.value;
-    els.region.innerHTML = '<option value="all">All Regions</option>';
-    groupHierarchy.regions.forEach(function (r) {
-      var opt = document.createElement("option");
-      opt.value = r.id;
-      opt.textContent = r.name || r.id;
-      els.region.appendChild(opt);
-    });
-    if (current && els.region.querySelector('option[value="' + current + '"]')) {
-      els.region.value = current;
-    }
-  }
+  function populateGroupDropdown() {
+    var current = els.group.value;
+    els.group.innerHTML = '<option value="all">All Groups</option>';
 
-  function populateBranchDropdown(regionId) {
-    var current = els.branch.value;
-    els.branch.innerHTML = '<option value="all">All Branches</option>';
-    if (regionId && regionId !== "all") {
-      var brs = groupHierarchy.branches[regionId] || [];
-      brs.forEach(function (b) {
-        var opt = document.createElement("option");
-        opt.value = b.id;
-        opt.textContent = b.name || b.id;
-        els.branch.appendChild(opt);
-      });
-    }
-    if (current && els.branch.querySelector('option[value="' + current + '"]')) {
-      els.branch.value = current;
+    // Build sorted list of non-system groups
+    var skipIds = { GroupCompanyId: true, GroupNothingId: true };
+    var groupList = [];
+    Object.keys(allGroups).forEach(function (gid) {
+      var g = allGroups[gid];
+      if (skipIds[gid]) return;
+      if (!g.name || g.name === "CompanyGroup" || g.name === "**Nothing**") return;
+      groupList.push(g);
+    });
+    groupList.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+
+    groupList.forEach(function (g) {
+      var opt = document.createElement("option");
+      opt.value = g.id;
+      opt.textContent = g.name || g.id;
+      els.group.appendChild(opt);
+    });
+    if (current && els.group.querySelector('option[value="' + current + '"]')) {
+      els.group.value = current;
     }
   }
 
@@ -584,8 +579,7 @@ geotab.addin.celDashboard = function () {
 
   function filteredDevices() {
     var vehicleId = els.vehicle.value;
-    var regionId = els.region.value;
-    var branchId = els.branch.value;
+    var groupId = els.group.value;
     var year = els.year.value;
     var make = els.make.value;
     var vtype = els.vtype.value;
@@ -596,13 +590,19 @@ geotab.addin.celDashboard = function () {
     }
 
     return allDevices.filter(function (dev) {
-      var dg = deviceGroupMap[dev.id] || {};
-      if (regionId !== "all" && dg.regionId !== regionId) return false;
-      if (branchId !== "all" && dg.branchId !== branchId) return false;
+      if (groupId !== "all") {
+        // Check if device belongs to the selected group
+        var devGroups = dev.groups || [];
+        var inGroup = false;
+        for (var i = 0; i < devGroups.length; i++) {
+          if (devGroups[i].id === groupId) { inGroup = true; break; }
+        }
+        if (!inGroup) return false;
+      }
 
       if (year !== "all" || make !== "all" || vtype !== "all") {
         var vi = getVinInfo(dev);
-        if (year !== "all" && vi.year !== year) return false;
+        if (year !== "all" && String(vi.year) !== year) return false;
         if (make !== "all" && vi.make !== make) return false;
         if (vtype !== "all" && vi.vtype !== vtype) return false;
       }
@@ -1629,10 +1629,6 @@ geotab.addin.celDashboard = function () {
     });
   }
 
-  function onRegionChange() {
-    populateBranchDropdown(els.region.value);
-  }
-
   // ── Add-In Lifecycle ──────────────────────────────────────────────────
 
   return {
@@ -1644,8 +1640,7 @@ geotab.addin.celDashboard = function () {
       els.fromDate = $("cel-from");
       els.toDate = $("cel-to");
       els.customDates = $("cel-custom-dates");
-      els.region = $("cel-region");
-      els.branch = $("cel-branch");
+      els.group = $("cel-group");
       els.vehicle = $("cel-vehicle");
       els.year = $("cel-year");
       els.make = $("cel-make");
@@ -1680,7 +1675,6 @@ geotab.addin.celDashboard = function () {
       document.querySelector(".cel-presets").addEventListener("click", onPresetClick);
       $("cel-tabs").addEventListener("click", onTabClick);
       document.querySelector(".cel-granularity").addEventListener("click", onGranularityClick);
-      els.region.addEventListener("change", onRegionChange);
 
       // Unit link click handler (delegated on content area)
       $("cel-content").addEventListener("click", function (e) {
@@ -1750,8 +1744,7 @@ geotab.addin.celDashboard = function () {
         // Build group hierarchy and map devices
         buildGroupHierarchy(groups, groupFilter);
         mapDeviceGroups();
-        populateRegionDropdown();
-        populateBranchDropdown(els.region.value);
+        populateGroupDropdown();
         populateVehicleDropdown();
 
         // Build vehicle info from Device entity properties
