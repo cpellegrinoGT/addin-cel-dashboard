@@ -108,12 +108,19 @@ geotab.addin.celDashboard = function () {
   function getDateRange() {
     var now = new Date();
     var preset = document.querySelector(".cel-preset.active");
-    var key = preset ? preset.dataset.preset : "30days";
+    var key = preset ? preset.dataset.preset : "yesterday";
     var from, to;
 
     to = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
 
     switch (key) {
+      case "yesterday":
+        from = new Date(now);
+        from.setDate(from.getDate() - 1);
+        from.setHours(0, 0, 0, 0);
+        to = new Date(from);
+        to.setHours(23, 59, 59);
+        break;
       case "7days":
         from = new Date(now);
         from.setDate(from.getDate() - 7);
