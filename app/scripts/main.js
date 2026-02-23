@@ -741,22 +741,31 @@ geotab.addin.celDashboard = function () {
   // ── Build Rows ────────────────────────────────────────────────────────
 
   function buildDtcRows(faults, devices) {
-    var deviceMap = {};
-    devices.forEach(function (d) { deviceMap[d.id] = d; });
+    // Full device name lookup (all devices, not just filtered)
+    var nameMap = {};
+    allDevices.forEach(function (d) { nameMap[d.id] = d.name || d.id; });
+
+    // Filter faults to only devices in the filtered set
+    var deviceSet = {};
+    devices.forEach(function (d) { deviceSet[d.id] = true; });
+
+    var filtered = faults.filter(function (f) {
+      var did = f.device ? f.device.id : null;
+      return did && deviceSet[did];
+    });
 
     // Count occurrences per device+code
     var occMap = {};
-    faults.forEach(function (f) {
-      var did = f.device ? f.device.id : "?";
+    filtered.forEach(function (f) {
+      var did = f.device.id;
       var diag = getDiagnosticInfo(f);
       var code = diag.code ? diag.code.toString() : "--";
       var key = did + "|" + code;
       occMap[key] = (occMap[key] || 0) + 1;
     });
 
-    return faults.map(function (f) {
-      var did = f.device ? f.device.id : "?";
-      var dev = deviceMap[did];
+    return filtered.map(function (f) {
+      var did = f.device.id;
       var diag = getDiagnosticInfo(f);
       var code = diag.code ? diag.code.toString() : "--";
       var key = did + "|" + code;
@@ -771,7 +780,7 @@ geotab.addin.celDashboard = function () {
 
       return {
         date: f.dateTime,
-        unit: dev ? dev.name : did,
+        unit: nameMap[did] || did,
         code: code,
         description: diag.name || "--",
         state: state,
