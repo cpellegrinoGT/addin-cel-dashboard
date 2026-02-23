@@ -164,6 +164,16 @@ geotab.addin.celDashboard = function () {
     els.warning.textContent = msg || "";
   }
 
+  function unitLink(deviceId, name) {
+    return '<a href="#" class="cel-unit-link" data-device-id="' + deviceId + '">' + escapeHtml(name) + '</a>';
+  }
+
+  function goToFaults(deviceId) {
+    var dateRange = getDateRange();
+    var hash = "#faults,dateRange:(startDate:'" + dateRange.from + "',endDate:'" + dateRange.to + "'),devicesIds:!('" + deviceId + "')";
+    window.top.location.hash = hash;
+  }
+
   // ── API Helpers ────────────────────────────────────────────────────────
 
   function delay(ms) {
@@ -810,6 +820,7 @@ geotab.addin.celDashboard = function () {
 
       return {
         date: f.dateTime,
+        deviceId: did,
         unit: nameMap[did] || did,
         code: code,
         description: diag.name || "--",
@@ -1113,7 +1124,7 @@ geotab.addin.celDashboard = function () {
       var stateClass = "cel-state-" + r.state.toLowerCase();
       var sevClass = "cel-badge " + severityBadgeClass(r.severity);
       return '<td>' + formatDate(r.date) + '</td>' +
-        '<td>' + escapeHtml(r.unit) + '</td>' +
+        '<td>' + unitLink(r.deviceId, r.unit) + '</td>' +
         '<td>' + escapeHtml(r.code) + '</td>' +
         '<td>' + escapeHtml(r.description) + '</td>' +
         '<td><span class="' + stateClass + '">' + r.state + '</span></td>' +
@@ -1143,7 +1154,7 @@ geotab.addin.celDashboard = function () {
 
     sortRows(rows, sortState.unit);
     renderTableBody(els.unitBody, rows, function (r) {
-      return '<td>' + escapeHtml(r.name) + '</td>' +
+      return '<td>' + unitLink(r.id, r.name) + '</td>' +
         '<td>' + escapeHtml(r.region) + '</td>' +
         '<td>' + escapeHtml(r.branch) + '</td>' +
         '<td>' + escapeHtml(r.year) + '</td>' +
@@ -1181,7 +1192,7 @@ geotab.addin.celDashboard = function () {
     sortRows(rows, sortState.comm);
     renderTableBody(els.commBody, rows, function (r) {
       var statusClass = r.status === "Reporting" ? "cel-status-reporting" : "cel-status-not-reporting";
-      return '<td>' + escapeHtml(r.name) + '</td>' +
+      return '<td>' + unitLink(r.id, r.name) + '</td>' +
         '<td>' + escapeHtml(r.region) + '</td>' +
         '<td>' + escapeHtml(r.branch) + '</td>' +
         '<td>' + formatDate(r.lastComm) + '</td>' +
@@ -1477,6 +1488,16 @@ geotab.addin.celDashboard = function () {
       $("cel-tabs").addEventListener("click", onTabClick);
       document.querySelector(".cel-granularity").addEventListener("click", onGranularityClick);
       els.region.addEventListener("change", onRegionChange);
+
+      // Unit link click handler (delegated on content area)
+      $("cel-content").addEventListener("click", function (e) {
+        var link = e.target.closest(".cel-unit-link");
+        if (link) {
+          e.preventDefault();
+          goToFaults(link.dataset.deviceId);
+          return;
+        }
+      });
 
       // Table sort listeners
       $("cel-dtc-table").addEventListener("click", function (e) {

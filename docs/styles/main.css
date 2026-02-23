@@ -547,6 +547,20 @@
   z-index: 800;
 }
 
+/* Unit links */
+
+#cel-root .cel-unit-link {
+  color: #4a90d9;
+  text-decoration: none;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+#cel-root .cel-unit-link:hover {
+  color: #3a7bc8;
+  text-decoration: underline;
+}
+
 /* Warning banner */
 
 #cel-root #cel-warning {
