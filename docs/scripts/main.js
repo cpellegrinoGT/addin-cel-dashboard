@@ -70,9 +70,33 @@ geotab.addin.celDashboard = function () {
     "616|Collision data unavailable": { severity: "Warning", effect: "Excessive collision events detected", action: "May indicate loose installation; verify mounting" }
   };
 
-  function getTelematicsFaultInfo(code, description) {
+  // Build a code-only index for telematics faults (for matching by code when controller is GO device)
+  var TELEMATICS_FAULTS_BY_CODE = {};
+  (function () {
+    for (var k in TELEMATICS_FAULTS) {
+      if (TELEMATICS_FAULTS.hasOwnProperty(k)) {
+        var code = k.split("|")[0];
+        TELEMATICS_FAULTS_BY_CODE[code] = TELEMATICS_FAULTS[k];
+      }
+    }
+  })();
+
+  function isGoDeviceController(fault) {
+    if (!fault.controller) return false;
+    var id = fault.controller.id || "";
+    var name = (fault.controller.name || "").toLowerCase();
+    return id === "ControllerGoDeviceId" || id === "ControllerNoneId" || name.indexOf("go") === 0 || name.indexOf("geotab") >= 0;
+  }
+
+  function getTelematicsFaultInfo(code, description, fault) {
+    // Try exact match first (code + description)
     var key = code + "|" + description;
-    return TELEMATICS_FAULTS[key] || null;
+    if (TELEMATICS_FAULTS[key]) return TELEMATICS_FAULTS[key];
+    // If controller is GO device, match by code alone
+    if (fault && isGoDeviceController(fault) && TELEMATICS_FAULTS_BY_CODE[code]) {
+      return TELEMATICS_FAULTS_BY_CODE[code];
+    }
+    return null;
   }
 
   // ── State ──────────────────────────────────────────────────────────────
@@ -164,7 +188,7 @@ geotab.addin.celDashboard = function () {
   function getDateRange() {
     var now = new Date();
     var preset = document.querySelector(".cel-preset.active");
-    var key = preset ? preset.dataset.preset : "yesterday";
+    var key = preset ? preset.dataset.preset : "7days";
     var from, to;
 
     to = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
@@ -224,21 +248,24 @@ geotab.addin.celDashboard = function () {
     return '<a href="#" class="cel-unit-link" data-device-id="' + deviceId + '">' + escapeHtml(name) + '</a>';
   }
 
+  function toGeotabDateStr(isoStr) {
+    // Convert ISO string to "YYYY-MM-DD" format for hash navigation
+    return isoStr.substring(0, 10);
+  }
+
   function goToFaults(deviceId) {
     var dateRange = getDateRange();
+    var fromStr = toGeotabDateStr(dateRange.from);
+    var toStr = toGeotabDateStr(dateRange.to);
+
     if (pageState && typeof pageState.gotoPage === "function") {
       pageState.gotoPage("engineFaults", {
-        dateRange: {
-          startDate: dateRange.from,
-          endDate: dateRange.to
-        },
+        dateRange: { startDate: fromStr, endDate: toStr },
         devicesIds: [deviceId]
       });
     } else {
       // Fallback: hash navigation
-      var from = dateRange.from.replace(/:/g, "%3A");
-      var to = dateRange.to.replace(/:/g, "%3A");
-      var hash = "#engineFaults,dateRange:(startDate:" + from + ",endDate:" + to + "),devicesIds:!(" + deviceId + ")";
+      var hash = "#engineFaults,dateRange:(startDate:" + fromStr + ",endDate:" + toStr + "),devicesIds:!(" + deviceId + ")";
       window.top.location.hash = hash;
     }
   }
@@ -891,7 +918,7 @@ geotab.addin.celDashboard = function () {
       var action = fm.recommendedAction || "--";
 
       // Enrich with static telematics fault reference when available
-      var telRef = getTelematicsFaultInfo(code, description);
+      var telRef = getTelematicsFaultInfo(code, description, f);
       if (telRef) {
         if (severity === "None" || severity === "--") severity = telRef.severity;
         if (effect === "--") effect = telRef.effect;
