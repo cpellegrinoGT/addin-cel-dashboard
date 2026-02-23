@@ -110,6 +110,7 @@ geotab.addin.celDashboard = function () {
   var celDiagnosticIds = {}; // set of diagnostic IDs that match CEL_DIAGNOSTIC_NAMES
   var vinCache = {};
   var deviceGroupMap = {}; // deviceId -> { region, branch }
+  var deviceGroupNames = {}; // deviceId -> comma-separated group names
   var pageState = null; // MyGeotab state object for page navigation
   var abortController = null;
   var firstFocus = true;
@@ -423,6 +424,16 @@ geotab.addin.celDashboard = function () {
         branch: foundBranch ? foundBranch.name : "--",
         branchId: foundBranch ? foundBranch.id : null
       };
+
+      // Build comma-separated group names for display
+      var names = [];
+      dev.groups.forEach(function (dg) {
+        var g = allGroups[dg.id];
+        if (g && g.name && g.name !== "CompanyGroup" && g.name !== "**Nothing**") {
+          names.push(g.name);
+        }
+      });
+      deviceGroupNames[dev.id] = names.length > 0 ? names.join(", ") : "--";
     });
   }
 
@@ -1003,8 +1014,7 @@ geotab.addin.celDashboard = function () {
       return {
         id: dev.id,
         name: dev.name || dev.id,
-        region: dg.region || "--",
-        branch: dg.branch || "--",
+        groups: deviceGroupNames[dev.id] || "--",
         year: vi.year,
         make: vi.make,
         vtype: vi.vtype,
@@ -1040,8 +1050,7 @@ geotab.addin.celDashboard = function () {
       return {
         id: dev.id,
         name: dev.name || dev.id,
-        region: dg.region || "--",
-        branch: dg.branch || "--",
+        groups: deviceGroupNames[dev.id] || "--",
         lastComm: lastComm,
         daysSince: daysSince,
         status: reportingStatus,
@@ -1285,18 +1294,16 @@ geotab.addin.celDashboard = function () {
     if (searchTerm) {
       rows = rows.filter(function (r) {
         return r.name.toLowerCase().indexOf(searchTerm) >= 0 ||
-               r.region.toLowerCase().indexOf(searchTerm) >= 0 ||
-               r.branch.toLowerCase().indexOf(searchTerm) >= 0 ||
-               r.make.toLowerCase().indexOf(searchTerm) >= 0;
+               r.groups.toLowerCase().indexOf(searchTerm) >= 0 ||
+               String(r.make).toLowerCase().indexOf(searchTerm) >= 0;
       });
     }
 
     sortRows(rows, sortState.unit);
     renderTableBody(els.unitBody, rows, function (r) {
       return '<td>' + unitLink(r.id, r.name) + '</td>' +
-        '<td>' + escapeHtml(r.region) + '</td>' +
-        '<td>' + escapeHtml(r.branch) + '</td>' +
-        '<td>' + escapeHtml(r.year) + '</td>' +
+        '<td>' + escapeHtml(r.groups) + '</td>' +
+        '<td>' + escapeHtml(String(r.year)) + '</td>' +
         '<td>' + escapeHtml(r.make) + '</td>' +
         '<td>' + escapeHtml(r.vtype) + '</td>' +
         '<td>' + escapeHtml(r.engine) + '</td>' +
@@ -1323,8 +1330,7 @@ geotab.addin.celDashboard = function () {
     if (searchTerm) {
       rows = rows.filter(function (r) {
         return r.name.toLowerCase().indexOf(searchTerm) >= 0 ||
-               r.region.toLowerCase().indexOf(searchTerm) >= 0 ||
-               r.branch.toLowerCase().indexOf(searchTerm) >= 0;
+               r.groups.toLowerCase().indexOf(searchTerm) >= 0;
       });
     }
 
@@ -1332,8 +1338,7 @@ geotab.addin.celDashboard = function () {
     renderTableBody(els.commBody, rows, function (r) {
       var statusClass = r.status === "Reporting" ? "cel-status-reporting" : "cel-status-not-reporting";
       return '<td>' + unitLink(r.id, r.name, "device") + '</td>' +
-        '<td>' + escapeHtml(r.region) + '</td>' +
-        '<td>' + escapeHtml(r.branch) + '</td>' +
+        '<td>' + escapeHtml(r.groups) + '</td>' +
         '<td>' + formatDate(r.lastComm) + '</td>' +
         '<td>' + r.daysSince + '</td>' +
         '<td><span class="' + statusClass + '">' + r.status + '</span></td>' +
@@ -1667,11 +1672,11 @@ geotab.addin.celDashboard = function () {
 
       // CSV export listeners
       $("cel-unit-export").addEventListener("click", function () {
-        var headers = ["name", "region", "branch", "year", "make", "vtype", "engine", "celPct", "activeDtcs", "repeatDtcs", "lastReported"];
+        var headers = ["name", "groups", "year", "make", "vtype", "engine", "celPct", "activeDtcs", "repeatDtcs", "lastReported"];
         exportCsv("cel_unit_detail.csv", headers, celData.unitRows);
       });
       $("cel-comm-export").addEventListener("click", function () {
-        var headers = ["name", "region", "branch", "lastComm", "daysSince", "status", "driving"];
+        var headers = ["name", "groups", "lastComm", "daysSince", "status", "driving"];
         exportCsv("cel_asset_status.csv", headers, celData.commRows);
       });
 
