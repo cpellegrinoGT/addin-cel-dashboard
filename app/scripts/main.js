@@ -506,7 +506,7 @@ geotab.addin.celDashboard = function () {
     };
   }
 
-  function fetchCelFaults(dateRange) {
+  function fetchCelFaults(dateRange, onProgress) {
     return fetchDiagnostics().then(function () {
       // Build targeted CEL queries — one per matching diagnostic ID
       var celIds = Object.keys(celDiagnosticIds);
@@ -522,17 +522,6 @@ geotab.addin.celDashboard = function () {
         }];
       });
 
-      // OBD faults for DTC table (filtered to ObdFault type only)
-      var obdCall = apiCall("Get", {
-        typeName: "FaultData",
-        search: {
-          fromDate: dateRange.from,
-          toDate: dateRange.to,
-          diagnosticSearch: { diagnosticType: "ObdFault" }
-        },
-        resultsLimit: FAULT_LIMIT
-      });
-
       // Fetch CEL faults via multiCall (small, targeted)
       var celPromise = celCalls.length > 0
         ? apiMultiCall(celCalls).then(function (results) {
@@ -544,11 +533,54 @@ geotab.addin.celDashboard = function () {
           })
         : Promise.resolve([]);
 
-      return Promise.all([celPromise, obdCall]);
+      // OBD faults — time-chunked to avoid 50k limit
+      var CHUNK_DAYS = 7;
+      var fromMs = new Date(dateRange.from).getTime();
+      var toMs = new Date(dateRange.to).getTime();
+      var chunks = [];
+      var cursor = fromMs;
+      while (cursor < toMs) {
+        var chunkEnd = Math.min(cursor + CHUNK_DAYS * 86400000, toMs);
+        chunks.push({
+          from: new Date(cursor).toISOString(),
+          to: new Date(chunkEnd).toISOString()
+        });
+        cursor = chunkEnd;
+      }
+
+      var totalChunks = chunks.length;
+      var completedChunks = 0;
+      var obdFaults = [];
+
+      var obdPromise = chunks.reduce(function (chain, chunk, chunkIdx) {
+        return chain.then(function () {
+          if (isAborted()) return;
+          var pause = chunkIdx > 0 ? delay(300) : Promise.resolve();
+          return pause.then(function () {
+            if (isAborted()) return;
+            return apiCall("Get", {
+              typeName: "FaultData",
+              search: {
+                fromDate: chunk.from,
+                toDate: chunk.to,
+                diagnosticSearch: { diagnosticType: "ObdFault" }
+              },
+              resultsLimit: FAULT_LIMIT
+            }).then(function (faults) {
+              obdFaults = obdFaults.concat(faults);
+              completedChunks++;
+              if (onProgress) onProgress(completedChunks / totalChunks * 100);
+            });
+          });
+        });
+      }, Promise.resolve()).then(function () {
+        return obdFaults;
+      });
+
+      return Promise.all([celPromise, obdPromise]);
     }).then(function (results) {
       var celFaults = results[0];
       var obdFaults = results[1];
-      var hitLimit = obdFaults.length >= FAULT_LIMIT;
 
       // Merge CEL faults into obdFaults if not already present (they may overlap)
       var obdIds = {};
@@ -557,7 +589,7 @@ geotab.addin.celDashboard = function () {
         if (f.id && !obdIds[f.id]) obdFaults.push(f);
       });
 
-      return { celFaults: celFaults, allFaults: obdFaults, hitLimit: hitLimit };
+      return { celFaults: celFaults, allFaults: obdFaults, hitLimit: false };
     });
   }
 
@@ -1260,21 +1292,20 @@ geotab.addin.celDashboard = function () {
 
     els.progress.textContent = devices.length + " vehicles selected";
 
-    // Step 1: Fetch fault data
-    fetchCelFaults(dateRange).then(function (result) {
+    // Step 1: Fetch fault data (time-chunked)
+    fetchCelFaults(dateRange, function (pct) {
+      setProgress(pct * 0.5); // faults = first 50% of progress
+      els.loadingText.textContent = "Fetching fault data... " + Math.round(pct) + "%";
+    }).then(function (result) {
       if (isAborted()) return;
 
       celData.celFaults = result.celFaults;
       celData.allFaults = result.allFaults;
 
-      if (result.hitLimit) {
-        showWarning("Fault data reached " + FAULT_LIMIT.toLocaleString() + " result limit. Some faults may be missing. Try narrowing the date range or filters.");
-      }
-
-      // Step 2: Fetch trips
+      // Step 2: Fetch trips (time-chunked)
       showLoading(true, "Fetching trip data...");
       return fetchTrips(devices, dateRange, function (pct) {
-        setProgress(pct);
+        setProgress(50 + pct * 0.5); // trips = second 50% of progress
         els.loadingText.textContent = "Fetching trip data... " + Math.round(pct) + "%";
       });
     }).then(function (trips) {
