@@ -244,8 +244,14 @@ geotab.addin.celDashboard = function () {
     els.warning.textContent = msg || "";
   }
 
-  function unitLink(deviceId, name) {
-    return '<a href="#" class="cel-unit-link" data-device-id="' + deviceId + '">' + escapeHtml(name) + '</a>';
+  function unitLink(deviceId, name, linkType) {
+    var type = linkType || "faults";
+    return '<a href="#" class="cel-unit-link" data-device-id="' + deviceId + '" data-link-type="' + type + '">' + escapeHtml(name) + '</a>';
+  }
+
+  function goToDevice(deviceId) {
+    var hash = "#device,id:" + deviceId;
+    window.top.location.hash = hash;
   }
 
   function goToFaults(deviceId) {
@@ -343,32 +349,72 @@ geotab.addin.celDashboard = function () {
     groupHierarchy = { regions: regions, branches: branches };
   }
 
+  function getAncestorIds(groupId) {
+    var ancestors = [];
+    var visited = {};
+    var current = groupId;
+    while (current && !visited[current]) {
+      visited[current] = true;
+      var g = allGroups[current];
+      if (!g || !g.parent || !g.parent.id) break;
+      ancestors.push(g.parent.id);
+      current = g.parent.id;
+    }
+    return ancestors;
+  }
+
   function mapDeviceGroups() {
     deviceGroupMap = {};
+
+    // Build sets for quick lookup
+    var regionIds = {};
+    groupHierarchy.regions.forEach(function (r) { regionIds[r.id] = r; });
+    var branchIds = {};
+    Object.keys(groupHierarchy.branches).forEach(function (rid) {
+      groupHierarchy.branches[rid].forEach(function (b) { branchIds[b.id] = { branch: b, regionId: rid }; });
+    });
+
     allDevices.forEach(function (dev) {
       if (!dev.groups || !dev.groups.length) {
         deviceGroupMap[dev.id] = { region: "--", regionId: null, branch: "--", branchId: null };
         return;
       }
 
-      var devGroupIds = {};
-      dev.groups.forEach(function (g) { devGroupIds[g.id] = true; });
-
       var foundRegion = null, foundBranch = null;
 
-      groupHierarchy.regions.forEach(function (reg) {
-        // Check if device is directly in region
-        if (devGroupIds[reg.id]) {
-          foundRegion = reg;
+      // For each group the device belongs to, check direct match then walk ancestors
+      dev.groups.forEach(function (dg) {
+        if (foundBranch) return; // already found best match
+
+        var gid = dg.id;
+
+        // Direct match to region
+        if (regionIds[gid]) {
+          foundRegion = regionIds[gid];
+          return;
         }
-        // Check branches
-        var brs = groupHierarchy.branches[reg.id] || [];
-        brs.forEach(function (br) {
-          if (devGroupIds[br.id]) {
-            foundRegion = reg;
-            foundBranch = br;
+
+        // Direct match to branch
+        if (branchIds[gid]) {
+          foundBranch = branchIds[gid].branch;
+          foundRegion = regionIds[branchIds[gid].regionId] || null;
+          return;
+        }
+
+        // Walk ancestors to find nearest branch or region
+        var ancestors = getAncestorIds(gid);
+        for (var i = 0; i < ancestors.length; i++) {
+          var aid = ancestors[i];
+          if (branchIds[aid]) {
+            foundBranch = branchIds[aid].branch;
+            foundRegion = regionIds[branchIds[aid].regionId] || null;
+            return;
           }
-        });
+          if (regionIds[aid]) {
+            foundRegion = regionIds[aid];
+            return;
+          }
+        }
       });
 
       deviceGroupMap[dev.id] = {
@@ -1285,7 +1331,7 @@ geotab.addin.celDashboard = function () {
     sortRows(rows, sortState.comm);
     renderTableBody(els.commBody, rows, function (r) {
       var statusClass = r.status === "Reporting" ? "cel-status-reporting" : "cel-status-not-reporting";
-      return '<td>' + unitLink(r.id, r.name) + '</td>' +
+      return '<td>' + unitLink(r.id, r.name, "device") + '</td>' +
         '<td>' + escapeHtml(r.region) + '</td>' +
         '<td>' + escapeHtml(r.branch) + '</td>' +
         '<td>' + formatDate(r.lastComm) + '</td>' +
@@ -1588,7 +1634,12 @@ geotab.addin.celDashboard = function () {
         var link = e.target.closest(".cel-unit-link");
         if (link) {
           e.preventDefault();
-          goToFaults(link.dataset.deviceId);
+          var linkType = link.dataset.linkType || "faults";
+          if (linkType === "device") {
+            goToDevice(link.dataset.deviceId);
+          } else {
+            goToFaults(link.dataset.deviceId);
+          }
           return;
         }
       });
@@ -1621,7 +1672,7 @@ geotab.addin.celDashboard = function () {
       });
       $("cel-comm-export").addEventListener("click", function () {
         var headers = ["name", "region", "branch", "lastComm", "daysSince", "status", "driving"];
-        exportCsv("cel_comm_report.csv", headers, celData.commRows);
+        exportCsv("cel_asset_status.csv", headers, celData.commRows);
       });
 
       // Load foundation data in parallel: Devices + Groups + DeviceStatusInfo
