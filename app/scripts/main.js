@@ -251,7 +251,7 @@ geotab.addin.celDashboard = function () {
   function goToFaults(deviceId) {
     var dateRange = getDateRange();
     // MyGeotab hash format: single-quoted strings, !() for arrays, () for objects
-    var hash = "#engineFaults,dateRange:(startDate:'" + dateRange.from + "',endDate:'" + dateRange.to + "'),devicesIds:!('" + deviceId + "')";
+    var hash = "#faults,dateRange:(startDate:'" + dateRange.from + "',endDate:'" + dateRange.to + "'),devicesIds:!('" + deviceId + "')";
     window.top.location.hash = hash;
   }
 
