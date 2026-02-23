@@ -15,12 +15,20 @@ geotab.addin.celDashboard = function () {
   var NHTSA_BATCH_SIZE = 50;
   var NOT_REPORTING_DAYS = 3;
 
+  // CEL diagnostic names to match
+  var CEL_DIAGNOSTIC_NAMES = [
+    "Vehicle warning light is on",
+    "Low priority warning light is on"
+  ];
+
   // ── State ──────────────────────────────────────────────────────────────
   var api;
   var allDevices = [];
   var allGroups = {};
   var groupHierarchy = { regions: [], branches: {} }; // branches keyed by regionId
   var deviceStatusMap = {};
+  var diagnosticMap = {}; // diagnosticId -> { name, code, source }
+  var celDiagnosticIds = {}; // set of diagnostic IDs that match CEL_DIAGNOSTIC_NAMES
   var vinCache = {};
   var deviceGroupMap = {}; // deviceId -> { region, branch }
   var abortController = null;
@@ -289,6 +297,23 @@ geotab.addin.celDashboard = function () {
     }
   }
 
+  function populateVehicleDropdown() {
+    var current = els.vehicle.value;
+    els.vehicle.innerHTML = '<option value="all">All Vehicles</option>';
+    var sorted = allDevices.slice().sort(function (a, b) {
+      return (a.name || "").localeCompare(b.name || "");
+    });
+    sorted.forEach(function (d) {
+      var opt = document.createElement("option");
+      opt.value = d.id;
+      opt.textContent = d.name || d.id;
+      els.vehicle.appendChild(opt);
+    });
+    if (current && els.vehicle.querySelector('option[value="' + current + '"]')) {
+      els.vehicle.value = current;
+    }
+  }
+
   // ── VIN Decode ─────────────────────────────────────────────────────────
 
   function loadVinCache() {
@@ -390,11 +415,17 @@ geotab.addin.celDashboard = function () {
   // ── Filtered Devices ───────────────────────────────────────────────────
 
   function filteredDevices() {
+    var vehicleId = els.vehicle.value;
     var regionId = els.region.value;
     var branchId = els.branch.value;
     var year = els.year.value;
     var make = els.make.value;
     var vtype = els.vtype.value;
+
+    // Single vehicle shortcut
+    if (vehicleId !== "all") {
+      return allDevices.filter(function (dev) { return dev.id === vehicleId; });
+    }
 
     return allDevices.filter(function (dev) {
       var dg = deviceGroupMap[dev.id] || {};
@@ -414,22 +445,62 @@ geotab.addin.celDashboard = function () {
 
   // ── Data Fetch ─────────────────────────────────────────────────────────
 
-  function fetchCelFaults(dateRange) {
+  function fetchDiagnostics() {
+    if (Object.keys(diagnosticMap).length > 0) return Promise.resolve();
     return apiCall("Get", {
-      typeName: "FaultData",
-      search: {
-        fromDate: dateRange.from,
-        toDate: dateRange.to,
-        diagnosticSearch: { diagnosticType: "ObdFault" },
-        isCurrentState: false
-      },
-      resultsLimit: FAULT_LIMIT
+      typeName: "Diagnostic",
+      resultsLimit: 50000
+    }).then(function (diagnostics) {
+      diagnostics.forEach(function (d) {
+        diagnosticMap[d.id] = {
+          name: d.name || "",
+          code: d.code || null,
+          source: d.source ? (d.source.name || d.source.id || "--") : "--"
+        };
+        // Check if this diagnostic matches our CEL names
+        var lowerName = (d.name || "").toLowerCase();
+        for (var i = 0; i < CEL_DIAGNOSTIC_NAMES.length; i++) {
+          if (lowerName === CEL_DIAGNOSTIC_NAMES[i].toLowerCase()) {
+            celDiagnosticIds[d.id] = true;
+            break;
+          }
+        }
+      });
+    });
+  }
+
+  function isCelFault(fault) {
+    if (!fault.diagnostic) return false;
+    return celDiagnosticIds[fault.diagnostic.id] === true;
+  }
+
+  function getDiagnosticInfo(fault) {
+    if (!fault.diagnostic) return { name: "--", code: "--", source: "--" };
+    var diag = diagnosticMap[fault.diagnostic.id];
+    if (diag) return diag;
+    // Fallback to what's on the fault itself
+    return {
+      name: fault.diagnostic.name || "--",
+      code: fault.diagnostic.code || fault.diagnostic.id || "--",
+      source: (fault.diagnostic.source && fault.diagnostic.source.name) ? fault.diagnostic.source.name : "--"
+    };
+  }
+
+  function fetchCelFaults(dateRange) {
+    return fetchDiagnostics().then(function () {
+      return apiCall("Get", {
+        typeName: "FaultData",
+        search: {
+          fromDate: dateRange.from,
+          toDate: dateRange.to
+        },
+        resultsLimit: FAULT_LIMIT
+      });
     }).then(function (faults) {
-      // Separate CEL (malfunctionLamp) faults
       var celFaults = [];
       var allFaults = faults;
       faults.forEach(function (f) {
-        if (f.malfunctionLamp === true) {
+        if (isCelFault(f)) {
           celFaults.push(f);
         }
       });
@@ -609,7 +680,8 @@ geotab.addin.celDashboard = function () {
     var occMap = {};
     faults.forEach(function (f) {
       var did = f.device ? f.device.id : "?";
-      var code = (f.diagnostic && f.diagnostic.code) ? f.diagnostic.code.toString() : (f.diagnostic ? f.diagnostic.id : "--");
+      var diag = getDiagnosticInfo(f);
+      var code = diag.code ? diag.code.toString() : "--";
       var key = did + "|" + code;
       occMap[key] = (occMap[key] || 0) + 1;
     });
@@ -617,7 +689,8 @@ geotab.addin.celDashboard = function () {
     return faults.map(function (f) {
       var did = f.device ? f.device.id : "?";
       var dev = deviceMap[did];
-      var code = (f.diagnostic && f.diagnostic.code) ? f.diagnostic.code.toString() : (f.diagnostic ? f.diagnostic.id : "--");
+      var diag = getDiagnosticInfo(f);
+      var code = diag.code ? diag.code.toString() : "--";
       var key = did + "|" + code;
 
       var state = "Active";
@@ -625,17 +698,17 @@ geotab.addin.celDashboard = function () {
       else if (f.state === 0 || f.state === "Cleared" || f.state === "Inactive") state = "Cleared";
 
       var severity = "Info";
-      if (f.malfunctionLamp === true) severity = "Critical";
+      if (isCelFault(f)) severity = "Critical";
       else if (f.amberWarningLamp === true || f.protectWarningLamp === true) severity = "Warning";
 
       return {
         date: f.dateTime,
         unit: dev ? dev.name : did,
         code: code,
-        description: (f.diagnostic && f.diagnostic.name) ? f.diagnostic.name : "--",
+        description: diag.name || "--",
         state: state,
         severity: severity,
-        faultClass: (f.diagnostic && f.diagnostic.source) ? f.diagnostic.source.name || "--" : "--",
+        faultClass: diag.source || "--",
         controller: f.controller ? (f.controller.name || f.controller.id || "--") : "--",
         count: occMap[key] || 1
       };
@@ -658,8 +731,9 @@ geotab.addin.celDashboard = function () {
       var repeatDtcs = 0;
       celData.allFaults.forEach(function (f) {
         if (f.device && f.device.id === dev.id) {
-          var code = (f.diagnostic && f.diagnostic.code) ? f.diagnostic.code.toString() : (f.diagnostic ? f.diagnostic.id : "--");
-          if (f.malfunctionLamp === true) activeDtcs++;
+          var diag = getDiagnosticInfo(f);
+          var code = diag.code ? diag.code.toString() : "--";
+          if (isCelFault(f)) activeDtcs++;
           dtcCodes[code] = (dtcCodes[code] || 0) + 1;
         }
       });
@@ -869,17 +943,21 @@ geotab.addin.celDashboard = function () {
       return "<td>" + escapeHtml(r.name) + "</td><td>" + r.count + "</td>";
     });
 
-    // Top 10 Most Recurring Faults (by DTC code)
+    // Top 10 Most Recurring Faults (by DTC code + description)
     var codeCount = {};
+    var codeNames = {};
     celData.allFaults.forEach(function (f) {
       var did = f.device ? f.device.id : null;
       if (!did || !deviceSet[did]) return;
-      var code = (f.diagnostic && f.diagnostic.code) ? f.diagnostic.code.toString() : (f.diagnostic ? f.diagnostic.id : "--");
+      var diag = getDiagnosticInfo(f);
+      var code = diag.code ? diag.code.toString() : "--";
       codeCount[code] = (codeCount[code] || 0) + 1;
+      if (!codeNames[code] && diag.name && diag.name !== "--") codeNames[code] = diag.name;
     });
     var codeArr = [];
     Object.keys(codeCount).forEach(function (code) {
-      codeArr.push({ code: code, count: codeCount[code] });
+      var label = codeNames[code] ? code + " - " + codeNames[code] : code;
+      codeArr.push({ code: label, count: codeCount[code] });
     });
     codeArr.sort(function (a, b) { return b.count - a.count; });
     renderSmallTable(els.top10Recurring, codeArr.slice(0, 10), function (r) {
@@ -1234,6 +1312,7 @@ geotab.addin.celDashboard = function () {
       els.customDates = $("cel-custom-dates");
       els.region = $("cel-region");
       els.branch = $("cel-branch");
+      els.vehicle = $("cel-vehicle");
       els.year = $("cel-year");
       els.make = $("cel-make");
       els.vtype = $("cel-vtype");
@@ -1327,6 +1406,7 @@ geotab.addin.celDashboard = function () {
         mapDeviceGroups();
         populateRegionDropdown();
         populateBranchDropdown(els.region.value);
+        populateVehicleDropdown();
 
         // Decode VINs
         var vins = allDevices.map(function (d) {
@@ -1359,6 +1439,7 @@ geotab.addin.celDashboard = function () {
           }
         });
         mapDeviceGroups();
+        populateVehicleDropdown();
       }).catch(function () {});
 
       // Auto-load on first focus
