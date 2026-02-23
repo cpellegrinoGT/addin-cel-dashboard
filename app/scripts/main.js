@@ -250,8 +250,9 @@ geotab.addin.celDashboard = function () {
 
   function goToFaults(deviceId) {
     var dateRange = getDateRange();
-    // MyGeotab hash format: single-quoted strings, !() for arrays, () for objects
-    var hash = "#faults,dateRange:(startDate:'" + dateRange.from + "',endDate:'" + dateRange.to + "'),devicesIds:!('" + deviceId + "')";
+    var preset = document.querySelector(".cel-preset.active");
+    var label = preset ? preset.textContent : "Last 7 Days";
+    var hash = "#faults,dateRange:(from:'" + dateRange.from + "',label:" + label + ",to:'" + dateRange.to + "'),faultAssets:!(" + deviceId + ")";
     window.top.location.hash = hash;
   }
 
