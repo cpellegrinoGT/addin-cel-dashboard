@@ -103,14 +103,13 @@ geotab.addin.celDashboard = function () {
   var api;
   var allDevices = [];
   var allGroups = {};
-  var allGroupList = []; // flat sorted list of { id, name } for dropdown
+  var groupHierarchy = { regions: [], branches: {} }; // branches keyed by regionId
   var deviceStatusMap = {};
   var diagnosticMap = {}; // diagnosticId -> { name, code, source }
   var failureModeMap = {}; // failureModeId -> { name, description, ... }
   var celDiagnosticIds = {}; // set of diagnostic IDs that match CEL_DIAGNOSTIC_NAMES
   var vinCache = {};
-  var deviceGroupNames = {}; // deviceId -> comma-separated group names
-  var deviceGroupIds = {}; // deviceId -> set of group ids (including ancestors)
+  var deviceGroupMap = {}; // deviceId -> { region, branch }
   var pageState = null; // MyGeotab state object for page navigation
   var abortController = null;
   var firstFocus = true;
@@ -297,62 +296,164 @@ geotab.addin.celDashboard = function () {
     return tryCall();
   }
 
-  // ── Group Helpers ─────────────────────────────────────────────────────
+  // ── Group Hierarchy ────────────────────────────────────────────────────
 
-  function buildGroupMap(groups) {
+  function buildGroupHierarchy(groups, userGroupFilter) {
     allGroups = {};
-    var skipIds = { GroupCompanyId: true, GroupNothingId: true };
     groups.forEach(function (g) {
       allGroups[g.id] = g;
     });
 
-    // Build flat list of non-system groups for dropdown
-    allGroupList = groups.filter(function (g) {
-      if (skipIds[g.id]) return false;
-      if (!g.name || g.name === "CompanyGroup" || g.name === "**Nothing**") return false;
-      return true;
-    }).sort(function (a, b) {
-      return (a.name || "").localeCompare(b.name || "");
+    // Find root groups to walk from (user's group filter or CompanyGroup)
+    var rootIds = [];
+    if (userGroupFilter && userGroupFilter.length) {
+      userGroupFilter.forEach(function (g) {
+        rootIds.push(g.id || g);
+      });
+    } else {
+      // Default: CompanyGroup
+      groups.forEach(function (g) {
+        if (g.name === "CompanyGroup" || g.id === "GroupCompanyId") {
+          rootIds.push(g.id);
+        }
+      });
+    }
+
+    // Children map
+    var childrenMap = {};
+    groups.forEach(function (g) {
+      if (g.parent && g.parent.id) {
+        if (!childrenMap[g.parent.id]) childrenMap[g.parent.id] = [];
+        childrenMap[g.parent.id].push(g);
+      }
     });
+
+    // Level 1 = regions, Level 2 = branches
+    var regions = [];
+    var branches = {};
+
+    rootIds.forEach(function (rootId) {
+      var level1 = childrenMap[rootId] || [];
+      level1.forEach(function (reg) {
+        regions.push(reg);
+        branches[reg.id] = childrenMap[reg.id] || [];
+      });
+    });
+
+    // Sort alphabetically
+    regions.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+    Object.keys(branches).forEach(function (rid) {
+      branches[rid].sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+    });
+
+    groupHierarchy = { regions: regions, branches: branches };
+  }
+
+  function getAncestorIds(groupId) {
+    var ancestors = [];
+    var visited = {};
+    var current = groupId;
+    while (current && !visited[current]) {
+      visited[current] = true;
+      var g = allGroups[current];
+      if (!g || !g.parent || !g.parent.id) break;
+      ancestors.push(g.parent.id);
+      current = g.parent.id;
+    }
+    return ancestors;
   }
 
   function mapDeviceGroups() {
-    deviceGroupNames = {};
-    deviceGroupIds = {};
+    deviceGroupMap = {};
+
+    // Build sets for quick lookup
+    var regionIds = {};
+    groupHierarchy.regions.forEach(function (r) { regionIds[r.id] = r; });
+    var branchIds = {};
+    Object.keys(groupHierarchy.branches).forEach(function (rid) {
+      groupHierarchy.branches[rid].forEach(function (b) { branchIds[b.id] = { branch: b, regionId: rid }; });
+    });
 
     allDevices.forEach(function (dev) {
       if (!dev.groups || !dev.groups.length) {
-        deviceGroupNames[dev.id] = "--";
-        deviceGroupIds[dev.id] = {};
+        deviceGroupMap[dev.id] = { region: "--", regionId: null, branch: "--", branchId: null };
         return;
       }
 
-      var names = [];
-      var idSet = {};
+      var foundRegion = null, foundBranch = null;
+
+      // For each group the device belongs to, check direct match then walk ancestors
       dev.groups.forEach(function (dg) {
-        var g = allGroups[dg.id];
-        if (g && g.name && g.name !== "CompanyGroup" && g.name !== "**Nothing**") {
-          names.push(g.name);
+        if (foundBranch) return; // already found best match
+
+        var gid = dg.id;
+
+        // Direct match to region
+        if (regionIds[gid]) {
+          foundRegion = regionIds[gid];
+          return;
         }
-        idSet[dg.id] = true;
+
+        // Direct match to branch
+        if (branchIds[gid]) {
+          foundBranch = branchIds[gid].branch;
+          foundRegion = regionIds[branchIds[gid].regionId] || null;
+          return;
+        }
+
+        // Walk ancestors to find nearest branch or region
+        var ancestors = getAncestorIds(gid);
+        for (var i = 0; i < ancestors.length; i++) {
+          var aid = ancestors[i];
+          if (branchIds[aid]) {
+            foundBranch = branchIds[aid].branch;
+            foundRegion = regionIds[branchIds[aid].regionId] || null;
+            return;
+          }
+          if (regionIds[aid]) {
+            foundRegion = regionIds[aid];
+            return;
+          }
+        }
       });
 
-      deviceGroupNames[dev.id] = names.length > 0 ? names.join(", ") : "--";
-      deviceGroupIds[dev.id] = idSet;
+      deviceGroupMap[dev.id] = {
+        region: foundRegion ? foundRegion.name : "--",
+        regionId: foundRegion ? foundRegion.id : null,
+        branch: foundBranch ? foundBranch.name : "--",
+        branchId: foundBranch ? foundBranch.id : null
+      };
     });
   }
 
-  function populateGroupDropdown() {
-    var current = els.group.value;
-    els.group.innerHTML = '<option value="all">All Groups</option>';
-    allGroupList.forEach(function (g) {
+  function populateRegionDropdown() {
+    var current = els.region.value;
+    els.region.innerHTML = '<option value="all">All Regions</option>';
+    groupHierarchy.regions.forEach(function (r) {
       var opt = document.createElement("option");
-      opt.value = g.id;
-      opt.textContent = g.name || g.id;
-      els.group.appendChild(opt);
+      opt.value = r.id;
+      opt.textContent = r.name || r.id;
+      els.region.appendChild(opt);
     });
-    if (current && els.group.querySelector('option[value="' + current + '"]')) {
-      els.group.value = current;
+    if (current && els.region.querySelector('option[value="' + current + '"]')) {
+      els.region.value = current;
+    }
+  }
+
+  function populateBranchDropdown(regionId) {
+    var current = els.branch.value;
+    els.branch.innerHTML = '<option value="all">All Branches</option>';
+    if (regionId && regionId !== "all") {
+      var brs = groupHierarchy.branches[regionId] || [];
+      brs.forEach(function (b) {
+        var opt = document.createElement("option");
+        opt.value = b.id;
+        opt.textContent = b.name || b.id;
+        els.branch.appendChild(opt);
+      });
+    }
+    if (current && els.branch.querySelector('option[value="' + current + '"]')) {
+      els.branch.value = current;
     }
   }
 
@@ -375,76 +476,12 @@ geotab.addin.celDashboard = function () {
 
   // ── Vehicle Info (from MyGeotab Device entity) ─────────────────────────
 
-  // VIN position 10 year code lookup
-  var VIN_YEAR_CODES = {
-    A: 2010, B: 2011, C: 2012, D: 2013, E: 2014, F: 2015, G: 2016,
-    H: 2017, J: 2018, K: 2019, L: 2020, M: 2021, N: 2022, P: 2023,
-    R: 2024, S: 2025, T: 2026, V: 2027, W: 2028, X: 2029, Y: 2030,
-    1: 2001, 2: 2002, 3: 2003, 4: 2004, 5: 2005, 6: 2006, 7: 2007,
-    8: 2008, 9: 2009
-  };
-
-  // Common WMI (first 3 chars) to make
-  var WMI_MAKE = {
-    "1G1": "Chevrolet", "1G2": "Pontiac", "1GC": "Chevrolet", "1GT": "GMC",
-    "1GY": "Cadillac", "1FA": "Ford", "1FB": "Ford", "1FC": "Ford",
-    "1FD": "Ford", "1FM": "Ford", "1FT": "Ford", "1FU": "Freightliner",
-    "1FV": "Freightliner", "1GD": "Chevrolet", "1G6": "Cadillac",
-    "1HG": "Honda", "1J4": "Jeep", "1J8": "Jeep", "1C3": "Chrysler",
-    "1C4": "Chrysler", "1C6": "RAM", "1LN": "Lincoln", "1ME": "Mercury",
-    "1N4": "Nissan", "1N6": "Nissan", "1NX": "Toyota",
-    "2C3": "Chrysler", "2C4": "Chrysler", "2FA": "Ford", "2FM": "Ford",
-    "2FT": "Ford", "2G1": "Chevrolet", "2GC": "Chevrolet", "2GT": "GMC",
-    "2HG": "Honda", "2HK": "Honda", "2T1": "Toyota", "2T2": "Lexus",
-    "3C4": "Chrysler", "3C6": "RAM", "3D7": "RAM", "3FA": "Ford",
-    "3G5": "Buick", "3GN": "GMC", "3GT": "GMC", "3GC": "Chevrolet",
-    "3N1": "Nissan", "3VW": "Volkswagen",
-    "4T1": "Toyota", "4T3": "Toyota", "4T4": "Toyota",
-    "5FN": "Honda", "5J6": "Honda", "5NP": "Hyundai", "5N1": "Nissan",
-    "5TD": "Toyota", "5TF": "Toyota", "5YJ": "Tesla",
-    "JHM": "Honda", "JN1": "Nissan", "JN8": "Nissan", "JTE": "Toyota",
-    "JTD": "Toyota", "JTM": "Toyota", "JTN": "Toyota",
-    "KND": "Kia", "KM8": "Hyundai", "KMH": "Hyundai",
-    "SAJ": "Jaguar", "SAL": "Land Rover",
-    "WAU": "Audi", "WBA": "BMW", "WBS": "BMW", "WDB": "Mercedes-Benz",
-    "WDD": "Mercedes-Benz", "WDC": "Mercedes-Benz", "WF0": "Ford",
-    "WME": "Smart", "WP0": "Porsche", "WVW": "Volkswagen",
-    "YV1": "Volvo", "YV4": "Volvo",
-    "ZFF": "Ferrari"
-  };
-
-  function decodeVinYear(vin) {
-    if (!vin || vin.length < 10) return null;
-    var code = vin.charAt(9).toUpperCase();
-    return VIN_YEAR_CODES[code] || null;
-  }
-
-  function decodeVinMake(vin) {
-    if (!vin || vin.length < 3) return null;
-    var wmi = vin.substring(0, 3).toUpperCase();
-    return WMI_MAKE[wmi] || null;
-  }
-
   function buildDeviceInfoMap() {
     vinCache = {};
     allDevices.forEach(function (d) {
-      var year = d.year || d.modelYear || "--";
-      var make = d.make || "--";
-      var vin = d.vehicleIdentificationNumber || d.vin || "";
-
-      // Fallback to VIN decoding if properties are blank
-      if ((year === "--" || year === "" || year === 0) && vin) {
-        var decoded = decodeVinYear(vin);
-        if (decoded) year = decoded;
-      }
-      if ((make === "--" || make === "") && vin) {
-        var decodedMake = decodeVinMake(vin);
-        if (decodedMake) make = decodedMake;
-      }
-
       vinCache[d.id] = {
-        year: year || "--",
-        make: make || "--",
+        year: d.year || d.modelYear || "--",
+        make: d.make || "--",
         vtype: d.vehicleType || d.deviceType || "--",
         engine: d.engineType || "--"
       };
@@ -488,7 +525,8 @@ geotab.addin.celDashboard = function () {
 
   function filteredDevices() {
     var vehicleId = els.vehicle.value;
-    var groupId = els.group.value;
+    var regionId = els.region.value;
+    var branchId = els.branch.value;
     var year = els.year.value;
     var make = els.make.value;
     var vtype = els.vtype.value;
@@ -499,14 +537,13 @@ geotab.addin.celDashboard = function () {
     }
 
     return allDevices.filter(function (dev) {
-      if (groupId !== "all") {
-        var gids = deviceGroupIds[dev.id] || {};
-        if (!gids[groupId]) return false;
-      }
+      var dg = deviceGroupMap[dev.id] || {};
+      if (regionId !== "all" && dg.regionId !== regionId) return false;
+      if (branchId !== "all" && dg.branchId !== branchId) return false;
 
       if (year !== "all" || make !== "all" || vtype !== "all") {
         var vi = getVinInfo(dev);
-        if (year !== "all" && String(vi.year) !== year) return false;
+        if (year !== "all" && vi.year !== year) return false;
         if (make !== "all" && vi.make !== make) return false;
         if (vtype !== "all" && vi.vtype !== vtype) return false;
       }
@@ -942,7 +979,7 @@ geotab.addin.celDashboard = function () {
 
     return devices.map(function (dev) {
       var vi = getVinInfo(dev);
-      var groups = deviceGroupNames[dev.id] || "--";
+      var dg = deviceGroupMap[dev.id] || {};
       var celPct = celData.deviceCelPct[dev.id] || 0;
       var status = deviceStatusMap[dev.id];
       var lastReported = status ? status.dateTime || status.lastCommunication : null;
@@ -966,7 +1003,8 @@ geotab.addin.celDashboard = function () {
       return {
         id: dev.id,
         name: dev.name || dev.id,
-        groups: groups,
+        region: dg.region || "--",
+        branch: dg.branch || "--",
         year: vi.year,
         make: vi.make,
         vtype: vi.vtype,
@@ -983,7 +1021,7 @@ geotab.addin.celDashboard = function () {
     var now = new Date();
 
     return devices.map(function (dev) {
-      var groups = deviceGroupNames[dev.id] || "--";
+      var dg = deviceGroupMap[dev.id] || {};
       var status = deviceStatusMap[dev.id];
       var lastComm = status ? (status.dateTime || status.lastCommunication || null) : null;
       var daysSince = 0;
@@ -1002,7 +1040,8 @@ geotab.addin.celDashboard = function () {
       return {
         id: dev.id,
         name: dev.name || dev.id,
-        groups: groups,
+        region: dg.region || "--",
+        branch: dg.branch || "--",
         lastComm: lastComm,
         daysSince: daysSince,
         status: reportingStatus,
@@ -1246,16 +1285,18 @@ geotab.addin.celDashboard = function () {
     if (searchTerm) {
       rows = rows.filter(function (r) {
         return r.name.toLowerCase().indexOf(searchTerm) >= 0 ||
-               r.groups.toLowerCase().indexOf(searchTerm) >= 0 ||
-               String(r.make).toLowerCase().indexOf(searchTerm) >= 0;
+               r.region.toLowerCase().indexOf(searchTerm) >= 0 ||
+               r.branch.toLowerCase().indexOf(searchTerm) >= 0 ||
+               r.make.toLowerCase().indexOf(searchTerm) >= 0;
       });
     }
 
     sortRows(rows, sortState.unit);
     renderTableBody(els.unitBody, rows, function (r) {
       return '<td>' + unitLink(r.id, r.name) + '</td>' +
-        '<td>' + escapeHtml(r.groups) + '</td>' +
-        '<td>' + escapeHtml(String(r.year)) + '</td>' +
+        '<td>' + escapeHtml(r.region) + '</td>' +
+        '<td>' + escapeHtml(r.branch) + '</td>' +
+        '<td>' + escapeHtml(r.year) + '</td>' +
         '<td>' + escapeHtml(r.make) + '</td>' +
         '<td>' + escapeHtml(r.vtype) + '</td>' +
         '<td>' + escapeHtml(r.engine) + '</td>' +
@@ -1282,7 +1323,8 @@ geotab.addin.celDashboard = function () {
     if (searchTerm) {
       rows = rows.filter(function (r) {
         return r.name.toLowerCase().indexOf(searchTerm) >= 0 ||
-               r.groups.toLowerCase().indexOf(searchTerm) >= 0;
+               r.region.toLowerCase().indexOf(searchTerm) >= 0 ||
+               r.branch.toLowerCase().indexOf(searchTerm) >= 0;
       });
     }
 
@@ -1290,7 +1332,8 @@ geotab.addin.celDashboard = function () {
     renderTableBody(els.commBody, rows, function (r) {
       var statusClass = r.status === "Reporting" ? "cel-status-reporting" : "cel-status-not-reporting";
       return '<td>' + unitLink(r.id, r.name, "device") + '</td>' +
-        '<td>' + escapeHtml(r.groups) + '</td>' +
+        '<td>' + escapeHtml(r.region) + '</td>' +
+        '<td>' + escapeHtml(r.branch) + '</td>' +
         '<td>' + formatDate(r.lastComm) + '</td>' +
         '<td>' + r.daysSince + '</td>' +
         '<td><span class="' + statusClass + '">' + r.status + '</span></td>' +
@@ -1533,6 +1576,10 @@ geotab.addin.celDashboard = function () {
     });
   }
 
+  function onRegionChange() {
+    populateBranchDropdown(els.region.value);
+  }
+
   // ── Add-In Lifecycle ──────────────────────────────────────────────────
 
   return {
@@ -1544,7 +1591,8 @@ geotab.addin.celDashboard = function () {
       els.fromDate = $("cel-from");
       els.toDate = $("cel-to");
       els.customDates = $("cel-custom-dates");
-      els.group = $("cel-group");
+      els.region = $("cel-region");
+      els.branch = $("cel-branch");
       els.vehicle = $("cel-vehicle");
       els.year = $("cel-year");
       els.make = $("cel-make");
@@ -1579,6 +1627,7 @@ geotab.addin.celDashboard = function () {
       document.querySelector(".cel-presets").addEventListener("click", onPresetClick);
       $("cel-tabs").addEventListener("click", onTabClick);
       document.querySelector(".cel-granularity").addEventListener("click", onGranularityClick);
+      els.region.addEventListener("change", onRegionChange);
 
       // Unit link click handler (delegated on content area)
       $("cel-content").addEventListener("click", function (e) {
@@ -1618,15 +1667,17 @@ geotab.addin.celDashboard = function () {
 
       // CSV export listeners
       $("cel-unit-export").addEventListener("click", function () {
-        var headers = ["name", "groups", "year", "make", "vtype", "engine", "celPct", "activeDtcs", "repeatDtcs", "lastReported"];
+        var headers = ["name", "region", "branch", "year", "make", "vtype", "engine", "celPct", "activeDtcs", "repeatDtcs", "lastReported"];
         exportCsv("cel_unit_detail.csv", headers, celData.unitRows);
       });
       $("cel-comm-export").addEventListener("click", function () {
-        var headers = ["name", "groups", "lastComm", "daysSince", "status", "driving"];
+        var headers = ["name", "region", "branch", "lastComm", "daysSince", "status", "driving"];
         exportCsv("cel_asset_status.csv", headers, celData.commRows);
       });
 
       // Load foundation data in parallel: Devices + Groups + DeviceStatusInfo
+      var groupFilter = state.getGroupFilter();
+
       Promise.all([
         apiCall("Get", { typeName: "Device", resultsLimit: 5000 }),
         apiCall("Get", { typeName: "Group", resultsLimit: 5000 }),
@@ -1643,10 +1694,11 @@ geotab.addin.celDashboard = function () {
           }
         });
 
-        // Build group map and map devices
-        buildGroupMap(groups);
+        // Build group hierarchy and map devices
+        buildGroupHierarchy(groups, groupFilter);
         mapDeviceGroups();
-        populateGroupDropdown();
+        populateRegionDropdown();
+        populateBranchDropdown(els.region.value);
         populateVehicleDropdown();
 
         // Build vehicle info from Device entity properties
