@@ -488,23 +488,56 @@ geotab.addin.celDashboard = function () {
 
   function fetchCelFaults(dateRange) {
     return fetchDiagnostics().then(function () {
-      return apiCall("Get", {
+      // Build targeted CEL queries — one per matching diagnostic ID
+      var celIds = Object.keys(celDiagnosticIds);
+      var celCalls = celIds.map(function (diagId) {
+        return ["Get", {
+          typeName: "FaultData",
+          search: {
+            fromDate: dateRange.from,
+            toDate: dateRange.to,
+            diagnosticSearch: { id: diagId }
+          },
+          resultsLimit: FAULT_LIMIT
+        }];
+      });
+
+      // OBD faults for DTC table (filtered to ObdFault type only)
+      var obdCall = apiCall("Get", {
         typeName: "FaultData",
         search: {
           fromDate: dateRange.from,
-          toDate: dateRange.to
+          toDate: dateRange.to,
+          diagnosticSearch: { diagnosticType: "ObdFault" }
         },
         resultsLimit: FAULT_LIMIT
       });
-    }).then(function (faults) {
-      var celFaults = [];
-      var allFaults = faults;
-      faults.forEach(function (f) {
-        if (isCelFault(f)) {
-          celFaults.push(f);
-        }
+
+      // Fetch CEL faults via multiCall (small, targeted)
+      var celPromise = celCalls.length > 0
+        ? apiMultiCall(celCalls).then(function (results) {
+            var merged = [];
+            results.forEach(function (arr) {
+              if (Array.isArray(arr)) merged = merged.concat(arr);
+            });
+            return merged;
+          })
+        : Promise.resolve([]);
+
+      return Promise.all([celPromise, obdCall]);
+    }).then(function (results) {
+      var celFaults = results[0];
+      var obdFaults = results[1];
+      var hitLimit = obdFaults.length >= FAULT_LIMIT;
+
+      // Merge CEL faults into obdFaults if not already present (they may overlap)
+      var obdIds = {};
+      obdFaults.forEach(function (f) { if (f.id) obdIds[f.id] = true; });
+      celFaults.forEach(function (f) {
+        if (f.id && !obdIds[f.id]) obdFaults.push(f);
       });
-      return { celFaults: celFaults, allFaults: allFaults, hitLimit: faults.length >= FAULT_LIMIT };
+
+      return { celFaults: celFaults, allFaults: obdFaults, hitLimit: hitLimit };
     });
   }
 
