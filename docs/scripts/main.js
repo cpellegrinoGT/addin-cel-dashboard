@@ -248,26 +248,11 @@ geotab.addin.celDashboard = function () {
     return '<a href="#" class="cel-unit-link" data-device-id="' + deviceId + '">' + escapeHtml(name) + '</a>';
   }
 
-  function toGeotabDateStr(isoStr) {
-    // Convert ISO string to "YYYY-MM-DD" format for hash navigation
-    return isoStr.substring(0, 10);
-  }
-
   function goToFaults(deviceId) {
     var dateRange = getDateRange();
-    var fromStr = toGeotabDateStr(dateRange.from);
-    var toStr = toGeotabDateStr(dateRange.to);
-
-    if (pageState && typeof pageState.gotoPage === "function") {
-      pageState.gotoPage("engineFaults", {
-        dateRange: { startDate: fromStr, endDate: toStr },
-        devicesIds: [deviceId]
-      });
-    } else {
-      // Fallback: hash navigation
-      var hash = "#engineFaults,dateRange:(startDate:" + fromStr + ",endDate:" + toStr + "),devicesIds:!(" + deviceId + ")";
-      window.top.location.hash = hash;
-    }
+    // MyGeotab hash format: single-quoted strings, !() for arrays, () for objects
+    var hash = "#engineFaults,dateRange:(startDate:'" + dateRange.from + "',endDate:'" + dateRange.to + "'),devicesIds:!('" + deviceId + "')";
+    window.top.location.hash = hash;
   }
 
   // ── API Helpers ────────────────────────────────────────────────────────
