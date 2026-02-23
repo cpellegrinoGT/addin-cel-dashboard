@@ -4,7 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CEL Dashboard</title>
-  <link rel="stylesheet" href="styles/main.css?v=7" />
+  <link rel="stylesheet" id="cel-css" />
+  <script>document.getElementById("cel-css").href="styles/main.css?v="+Date.now();</script>
 </head>
 <body>
   <div id="cel-root">
@@ -274,6 +275,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-  <script src="scripts/main.js?v=7"></script>
+  <script>document.write('<script src="scripts/main.js?v='+Date.now()+'"><\/script>');</script>
 </body>
 </html>
