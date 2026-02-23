@@ -164,6 +164,10 @@ geotab.addin.celDashboard = function () {
 
   // ── API Helpers ────────────────────────────────────────────────────────
 
+  function delay(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
   function apiCall(method, params) {
     return new Promise(function (resolve, reject) {
       api.call(method, params, resolve, reject);
@@ -174,6 +178,22 @@ geotab.addin.celDashboard = function () {
     return new Promise(function (resolve, reject) {
       api.multiCall(calls, resolve, reject);
     });
+  }
+
+  /** multiCall with retry + exponential backoff on failure. */
+  function apiMultiCallRetry(calls, maxRetries) {
+    maxRetries = maxRetries || 3;
+    var attempt = 0;
+    function tryCall() {
+      return apiMultiCall(calls).catch(function (err) {
+        attempt++;
+        if (attempt >= maxRetries) throw err;
+        var wait = Math.min(1000 * Math.pow(2, attempt), 8000);
+        console.warn("CEL Dashboard: multiCall failed (attempt " + attempt + "), retrying in " + wait + "ms", err);
+        return delay(wait).then(tryCall);
+      });
+    }
+    return tryCall();
   }
 
   // ── Group Hierarchy ────────────────────────────────────────────────────
@@ -563,19 +583,24 @@ geotab.addin.celDashboard = function () {
     var completedBatches = 0;
     var allTrips = {};
 
-    return batches.reduce(function (chain, batch) {
+    return batches.reduce(function (chain, batch, batchIdx) {
       return chain.then(function () {
         if (isAborted()) return;
-        return apiMultiCall(batch.calls).then(function (results) {
-          results.forEach(function (tripArr, idx) {
-            var devIdx = batch.startIdx + idx;
-            var devId = devices[devIdx].id;
-            if (Array.isArray(tripArr)) {
-              allTrips[devId] = tripArr;
-            }
+        // Throttle: 250ms delay between batches to avoid rate limits
+        var pause = batchIdx > 0 ? delay(250) : Promise.resolve();
+        return pause.then(function () {
+          if (isAborted()) return;
+          return apiMultiCallRetry(batch.calls, 3).then(function (results) {
+            results.forEach(function (tripArr, idx) {
+              var devIdx = batch.startIdx + idx;
+              var devId = devices[devIdx].id;
+              if (Array.isArray(tripArr)) {
+                allTrips[devId] = tripArr;
+              }
+            });
+            completedBatches++;
+            if (onProgress) onProgress(completedBatches / totalBatches * 100);
           });
-          completedBatches++;
-          if (onProgress) onProgress(completedBatches / totalBatches * 100);
         });
       });
     }, Promise.resolve()).then(function () {
