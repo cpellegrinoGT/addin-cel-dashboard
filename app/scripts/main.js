@@ -28,6 +28,7 @@ geotab.addin.celDashboard = function () {
   var groupHierarchy = { regions: [], branches: {} }; // branches keyed by regionId
   var deviceStatusMap = {};
   var diagnosticMap = {}; // diagnosticId -> { name, code, source }
+  var failureModeMap = {}; // failureModeId -> { name, description, ... }
   var celDiagnosticIds = {}; // set of diagnostic IDs that match CEL_DIAGNOSTIC_NAMES
   var vinCache = {};
   var deviceGroupMap = {}; // deviceId -> { region, branch }
@@ -469,10 +470,24 @@ geotab.addin.celDashboard = function () {
 
   function fetchDiagnostics() {
     if (Object.keys(diagnosticMap).length > 0) return Promise.resolve();
-    return apiCall("Get", {
-      typeName: "Diagnostic",
-      resultsLimit: 50000
-    }).then(function (diagnostics) {
+    return Promise.all([
+      apiCall("Get", { typeName: "Diagnostic", resultsLimit: 50000 }),
+      apiCall("Get", { typeName: "FailureMode", resultsLimit: 50000 })
+    ]).then(function (results) {
+      var diagnostics = results[0] || [];
+      var failureModes = results[1] || [];
+
+      // Build failure mode lookup
+      failureModes.forEach(function (fm) {
+        failureModeMap[fm.id] = {
+          name: fm.name || "",
+          description: fm.description || "",
+          recommendedAction: fm.recommendedAction || "",
+          effectOnComponent: fm.effectOnComponent || ""
+        };
+      });
+
+      // Build diagnostic lookup
       diagnostics.forEach(function (d) {
         diagnosticMap[d.id] = {
           name: d.name || "",
@@ -506,6 +521,40 @@ geotab.addin.celDashboard = function () {
       code: fault.diagnostic.code || fault.diagnostic.id || "--",
       source: (fault.diagnostic.source && fault.diagnostic.source.name) ? fault.diagnostic.source.name : "--"
     };
+  }
+
+  function getFailureModeInfo(fault) {
+    if (!fault.failureMode) return { name: "--", description: "--", recommendedAction: "--", effectOnComponent: "--" };
+    var fm = failureModeMap[fault.failureMode.id];
+    if (fm) return fm;
+    return {
+      name: fault.failureMode.name || "--",
+      description: fault.failureMode.description || "--",
+      recommendedAction: fault.failureMode.recommendedAction || "--",
+      effectOnComponent: fault.failureMode.effectOnComponent || "--"
+    };
+  }
+
+  function formatSeverity(fault) {
+    // Use the SDK's severity enum directly from the FaultData entity
+    if (fault.severity != null && fault.severity !== "None") {
+      // Clean up enum names for display (e.g. "MalfunctionIndicatorWarningLamp" -> "Malfunction Indicator Warning Lamp")
+      var raw = String(fault.severity);
+      return raw.replace(/([A-Z])/g, " $1").trim();
+    }
+    // Fallback to lamp flags
+    if (fault.redStopLamp === true) return "Red Stop Lamp";
+    if (fault.malfunctionLamp === true) return "Malfunction Lamp";
+    if (fault.amberWarningLamp === true) return "Amber Warning";
+    if (fault.protectWarningLamp === true) return "Protect Warning";
+    return "None";
+  }
+
+  function severityBadgeClass(severity) {
+    var lower = severity.toLowerCase();
+    if (lower.indexOf("red") >= 0 || lower.indexOf("malfunction") >= 0) return "cel-badge-critical";
+    if (lower.indexOf("amber") >= 0 || lower.indexOf("warning") >= 0 || lower.indexOf("protect") >= 0) return "cel-badge-warning";
+    return "cel-badge-info";
   }
 
   function fetchCelFaults(dateRange, onProgress) {
@@ -801,6 +850,7 @@ geotab.addin.celDashboard = function () {
     return filtered.map(function (f) {
       var did = f.device.id;
       var diag = getDiagnosticInfo(f);
+      var fm = getFailureModeInfo(f);
       var code = diag.code ? diag.code.toString() : "--";
       var key = did + "|" + code;
 
@@ -808,9 +858,7 @@ geotab.addin.celDashboard = function () {
       if (f.state === 2 || f.state === "Pending") state = "Pending";
       else if (f.state === 0 || f.state === "Cleared" || f.state === "Inactive") state = "Cleared";
 
-      var severity = "Info";
-      if (isCelFault(f)) severity = "Critical";
-      else if (f.amberWarningLamp === true || f.protectWarningLamp === true) severity = "Warning";
+      var severity = formatSeverity(f);
 
       return {
         date: f.dateTime,
@@ -821,6 +869,8 @@ geotab.addin.celDashboard = function () {
         severity: severity,
         faultClass: diag.source || "--",
         controller: f.controller ? (f.controller.name || f.controller.id || "--") : "--",
+        effect: fm.effectOnComponent || "--",
+        action: fm.recommendedAction || "--",
         count: occMap[key] || 1
       };
     });
@@ -1113,15 +1163,17 @@ geotab.addin.celDashboard = function () {
     sortRows(rows, sortState.dtc);
     renderTableBody(els.dtcBody, rows, function (r) {
       var stateClass = "cel-state-" + r.state.toLowerCase();
-      var sevClass = "cel-badge cel-badge-" + r.severity.toLowerCase();
+      var sevClass = "cel-badge " + severityBadgeClass(r.severity);
       return '<td>' + formatDate(r.date) + '</td>' +
         '<td>' + escapeHtml(r.unit) + '</td>' +
         '<td>' + escapeHtml(r.code) + '</td>' +
         '<td>' + escapeHtml(r.description) + '</td>' +
         '<td><span class="' + stateClass + '">' + r.state + '</span></td>' +
-        '<td><span class="' + sevClass + '">' + r.severity + '</span></td>' +
+        '<td><span class="' + sevClass + '">' + escapeHtml(r.severity) + '</span></td>' +
         '<td>' + escapeHtml(r.faultClass) + '</td>' +
         '<td>' + escapeHtml(r.controller) + '</td>' +
+        '<td>' + escapeHtml(r.effect) + '</td>' +
+        '<td>' + escapeHtml(r.action) + '</td>' +
         '<td>' + r.count + '</td>';
     });
   }
