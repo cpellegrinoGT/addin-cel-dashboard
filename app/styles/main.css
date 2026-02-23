@@ -1,0 +1,560 @@
+/* All styles scoped under #cel-root to avoid leaking into MyGeotab */
+
+#cel-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  color: #333;
+}
+
+/* Toolbar */
+
+#cel-root #cel-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  padding: 10px 14px;
+  background: #f5f6f8;
+  border-bottom: 1px solid #ddd;
+  z-index: 1000;
+}
+
+#cel-root .cel-control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#cel-root .cel-control-group > label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #666;
+  letter-spacing: 0.3px;
+}
+
+#cel-root select,
+#cel-root input[type="date"],
+#cel-root input[type="text"] {
+  padding: 6px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 13px;
+  background: #fff;
+}
+
+#cel-root select:focus,
+#cel-root input[type="date"]:focus,
+#cel-root input[type="text"]:focus {
+  outline: none;
+  border-color: #4a90d9;
+  box-shadow: 0 0 0 2px rgba(74, 144, 217, 0.2);
+}
+
+/* Preset button group */
+
+#cel-root .cel-presets {
+  display: flex;
+}
+
+#cel-root .cel-preset {
+  padding: 6px 12px;
+  border: 1px solid #ccc;
+  background: #fff;
+  font-size: 13px;
+  cursor: pointer;
+  color: #333;
+  transition: background 0.15s, color 0.15s;
+}
+
+#cel-root .cel-preset:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+#cel-root .cel-preset:last-child {
+  border-radius: 0 4px 4px 0;
+}
+
+#cel-root .cel-preset:not(:first-child) {
+  border-left: none;
+}
+
+#cel-root .cel-preset:hover {
+  background: #e8ecf0;
+}
+
+#cel-root .cel-preset.active {
+  background: #4a90d9;
+  color: #fff;
+  border-color: #4a90d9;
+}
+
+#cel-root .cel-preset.active + .cel-preset {
+  border-left-color: #4a90d9;
+}
+
+/* Custom dates row */
+
+#cel-root #cel-custom-dates {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+#cel-root #cel-custom-dates label {
+  font-size: 13px;
+  font-weight: normal;
+  text-transform: none;
+  color: #555;
+}
+
+/* Apply button */
+
+#cel-root #cel-apply {
+  padding: 6px 20px;
+  background: #4a90d9;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+#cel-root #cel-apply:hover {
+  background: #3a7bc8;
+}
+
+#cel-root #cel-apply:active {
+  background: #2e66a8;
+}
+
+/* Progress text */
+
+#cel-root #cel-progress {
+  font-size: 13px;
+  color: #555;
+  align-self: center;
+  white-space: nowrap;
+}
+
+/* Tab Bar */
+
+#cel-root #cel-tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 14px;
+  background: #fff;
+  border-bottom: 2px solid #ddd;
+}
+
+#cel-root .cel-tab {
+  padding: 10px 20px;
+  border: none;
+  background: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: #666;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+#cel-root .cel-tab:hover {
+  color: #333;
+}
+
+#cel-root .cel-tab.active {
+  color: #4a90d9;
+  border-bottom-color: #4a90d9;
+}
+
+/* KPI Strip */
+
+#cel-root #cel-kpi-strip {
+  display: flex;
+  gap: 12px;
+  padding: 12px 14px;
+  background: #fff;
+  border-bottom: 1px solid #eee;
+}
+
+#cel-root .cel-kpi-card {
+  flex: 1;
+  padding: 12px 16px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  text-align: center;
+}
+
+#cel-root .cel-kpi-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #666;
+  letter-spacing: 0.3px;
+  margin-bottom: 4px;
+}
+
+#cel-root .cel-kpi-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: #333;
+}
+
+#cel-root .cel-kpi-value.cel-trend-up {
+  color: #dc3545;
+}
+
+#cel-root .cel-kpi-value.cel-trend-down {
+  color: #28a745;
+}
+
+/* Content Area */
+
+#cel-root #cel-content {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  overflow: auto;
+}
+
+#cel-root .cel-panel {
+  display: none;
+  padding: 14px;
+}
+
+#cel-root .cel-panel.active {
+  display: block;
+}
+
+/* Panel toolbar */
+
+#cel-root .cel-panel-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+#cel-root .cel-panel-toolbar input[type="text"] {
+  min-width: 220px;
+}
+
+/* Export button */
+
+#cel-root .cel-export-btn {
+  padding: 6px 16px;
+  background: #fff;
+  color: #4a90d9;
+  border: 1px solid #4a90d9;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+#cel-root .cel-export-btn:hover {
+  background: #4a90d9;
+  color: #fff;
+}
+
+/* Chart controls */
+
+#cel-root .cel-chart-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+
+#cel-root .cel-granularity {
+  display: flex;
+}
+
+#cel-root .cel-gran-btn {
+  padding: 4px 12px;
+  border: 1px solid #ccc;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  color: #333;
+  transition: background 0.15s, color 0.15s;
+}
+
+#cel-root .cel-gran-btn:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+#cel-root .cel-gran-btn:last-child {
+  border-radius: 0 4px 4px 0;
+}
+
+#cel-root .cel-gran-btn:not(:first-child) {
+  border-left: none;
+}
+
+#cel-root .cel-gran-btn:hover {
+  background: #e8ecf0;
+}
+
+#cel-root .cel-gran-btn.active {
+  background: #4a90d9;
+  color: #fff;
+  border-color: #4a90d9;
+}
+
+/* Chart wrapper */
+
+#cel-root .cel-chart-wrapper {
+  height: 320px;
+  position: relative;
+  margin-bottom: 20px;
+}
+
+#cel-root .cel-chart-wrapper canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Top 10 row */
+
+#cel-root .cel-top10-row {
+  display: flex;
+  gap: 14px;
+}
+
+#cel-root .cel-top10-card {
+  flex: 1;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+#cel-root .cel-top10-card h3 {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  background: #f9fafb;
+  border-bottom: 1px solid #e5e7eb;
+  color: #333;
+}
+
+/* Tables */
+
+#cel-root .cel-table-wrapper {
+  overflow: auto;
+  max-height: calc(100vh - 240px);
+}
+
+#cel-root .cel-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+#cel-root .cel-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+#cel-root .cel-table th {
+  padding: 8px 10px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: #666;
+  background: #f5f6f8;
+  border-bottom: 2px solid #ddd;
+  white-space: nowrap;
+  user-select: none;
+}
+
+#cel-root .cel-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid #eee;
+  color: #333;
+}
+
+#cel-root .cel-table tbody tr:hover {
+  background: #f0f5ff;
+}
+
+#cel-root .cel-table-small {
+  font-size: 12px;
+}
+
+#cel-root .cel-table-small th {
+  font-size: 10px;
+  padding: 6px 10px;
+}
+
+#cel-root .cel-table-small td {
+  padding: 5px 10px;
+}
+
+/* Sortable columns */
+
+#cel-root .cel-sortable {
+  cursor: pointer;
+}
+
+#cel-root .cel-sortable:hover {
+  color: #4a90d9;
+}
+
+#cel-root .cel-sort-arrow {
+  font-size: 10px;
+  margin-left: 2px;
+}
+
+#cel-root .cel-sort-arrow::after {
+  content: "";
+}
+
+#cel-root .cel-sortable.cel-sort-asc .cel-sort-arrow::after {
+  content: "\25B2";
+}
+
+#cel-root .cel-sortable.cel-sort-desc .cel-sort-arrow::after {
+  content: "\25BC";
+}
+
+/* Severity badges */
+
+#cel-root .cel-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+#cel-root .cel-badge-critical {
+  background: #fde8e8;
+  color: #dc3545;
+}
+
+#cel-root .cel-badge-warning {
+  background: #fff3cd;
+  color: #856404;
+}
+
+#cel-root .cel-badge-info {
+  background: #d1ecf1;
+  color: #0c5460;
+}
+
+/* Fault state colors */
+
+#cel-root .cel-state-active {
+  color: #dc3545;
+  font-weight: 600;
+}
+
+#cel-root .cel-state-pending {
+  color: #e67e22;
+  font-weight: 600;
+}
+
+#cel-root .cel-state-cleared {
+  color: #28a745;
+  font-weight: 600;
+}
+
+/* Communication status */
+
+#cel-root .cel-status-reporting {
+  color: #28a745;
+  font-weight: 600;
+}
+
+#cel-root .cel-status-not-reporting {
+  color: #dc3545;
+  font-weight: 600;
+}
+
+/* Loading overlay */
+
+#cel-root #cel-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.8);
+  z-index: 900;
+  gap: 12px;
+  font-size: 14px;
+  color: #555;
+}
+
+#cel-root .cel-spinner {
+  width: 36px;
+  height: 36px;
+  border: 4px solid #ddd;
+  border-top-color: #4a90d9;
+  border-radius: 50%;
+  animation: cel-spin 0.8s linear infinite;
+}
+
+@keyframes cel-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Progress bar */
+
+#cel-root .cel-progress-bar-wrap {
+  width: 200px;
+  height: 6px;
+  background: #ddd;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+#cel-root .cel-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: #4a90d9;
+  border-radius: 3px;
+  transition: width 0.2s;
+}
+
+/* Empty state */
+
+#cel-root #cel-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  color: #888;
+  background: rgba(255, 255, 255, 0.85);
+  z-index: 800;
+}
+
+/* Warning banner */
+
+#cel-root #cel-warning {
+  padding: 8px 14px;
+  background: #fff3cd;
+  color: #856404;
+  border: 1px solid #ffc107;
+  border-radius: 4px;
+  margin: 8px 14px 0;
+  font-size: 13px;
+}

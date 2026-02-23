@@ -1,0 +1,1379 @@
+/**
+ * CEL Dashboard — MyGeotab Add-In
+ *
+ * Provides Check Engine Light percentage trends and DTC insights
+ * for fleet vehicles using Geotab API fault/trip data and NHTSA
+ * VIN decoding for make/year/engine metadata.
+ */
+
+geotab.addin.celDashboard = function () {
+  "use strict";
+
+  // ── Constants ──────────────────────────────────────────────────────────
+  var MULTI_CALL_BATCH = 50;
+  var FAULT_LIMIT = 50000;
+  var NHTSA_BATCH_SIZE = 50;
+  var NOT_REPORTING_DAYS = 3;
+
+  // ── State ──────────────────────────────────────────────────────────────
+  var api;
+  var allDevices = [];
+  var allGroups = {};
+  var groupHierarchy = { regions: [], branches: {} }; // branches keyed by regionId
+  var deviceStatusMap = {};
+  var vinCache = {};
+  var deviceGroupMap = {}; // deviceId -> { region, branch }
+  var abortController = null;
+  var firstFocus = true;
+  var chartInstance = null;
+  var activeTab = "trend";
+  var currentGranularity = "month";
+
+  // Computed data (populated on Apply)
+  var celData = {
+    deviceCelPct: {},      // deviceId -> celPct number
+    deviceDrivenDays: {},  // deviceId -> count
+    deviceCelDays: {},     // deviceId -> count
+    trendBuckets: [],      // [{label, value}]
+    dtcRows: [],           // raw DTC fault rows
+    unitRows: [],          // per-device summary rows
+    commRows: [],          // per-device comm rows
+    celFaults: [],         // raw CEL faults
+    allFaults: [],         // raw all faults
+    trips: {}              // deviceId -> [trip]
+  };
+
+  // Cached date range for skip-re-fetch
+  var lastFetchRange = null;
+
+  // Sort state per table
+  var sortState = {
+    dtc: { col: "date", dir: "desc" },
+    unit: { col: "celPct", dir: "desc" },
+    comm: { col: "daysSince", dir: "desc" }
+  };
+
+  // ── DOM refs (set during initialize) ───────────────────────────────────
+  var els = {};
+
+  // ── Helpers ────────────────────────────────────────────────────────────
+
+  function $(id) {
+    return document.getElementById(id);
+  }
+
+  function dayKey(d) {
+    var dt = new Date(d);
+    return dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0");
+  }
+
+  function weekKey(d) {
+    var dt = new Date(d);
+    var day = dt.getDay();
+    var diff = dt.getDate() - day + (day === 0 ? -6 : 1); // Monday start
+    var monday = new Date(dt.setDate(diff));
+    return dayKey(monday);
+  }
+
+  function monthKey(d) {
+    var dt = new Date(d);
+    return dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0");
+  }
+
+  function formatDate(d) {
+    if (!d) return "--";
+    var dt = new Date(d);
+    return (dt.getMonth() + 1) + "/" + dt.getDate() + "/" + dt.getFullYear();
+  }
+
+  function formatPct(n) {
+    if (n == null || isNaN(n)) return "--";
+    return n.toFixed(1) + "%";
+  }
+
+  function escapeHtml(str) {
+    var div = document.createElement("div");
+    div.textContent = str || "";
+    return div.innerHTML;
+  }
+
+  function getDateRange() {
+    var now = new Date();
+    var preset = document.querySelector(".cel-preset.active");
+    var key = preset ? preset.dataset.preset : "30days";
+    var from, to;
+
+    to = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+
+    switch (key) {
+      case "7days":
+        from = new Date(now);
+        from.setDate(from.getDate() - 7);
+        from.setHours(0, 0, 0, 0);
+        break;
+      case "90days":
+        from = new Date(now);
+        from.setDate(from.getDate() - 90);
+        from.setHours(0, 0, 0, 0);
+        break;
+      case "custom":
+        from = els.fromDate.value ? new Date(els.fromDate.value + "T00:00:00") : new Date(now.getTime() - 30 * 86400000);
+        to = els.toDate.value ? new Date(els.toDate.value + "T23:59:59") : to;
+        break;
+      case "30days":
+      default:
+        from = new Date(now);
+        from.setDate(from.getDate() - 30);
+        from.setHours(0, 0, 0, 0);
+        break;
+    }
+
+    return { from: from.toISOString(), to: to.toISOString() };
+  }
+
+  function isAborted() {
+    return abortController && abortController.signal && abortController.signal.aborted;
+  }
+
+  function showLoading(show, text) {
+    els.loading.style.display = show ? "flex" : "none";
+    els.empty.style.display = "none";
+    if (text) els.loadingText.textContent = text;
+  }
+
+  function showEmpty(show) {
+    els.empty.style.display = show ? "flex" : "none";
+  }
+
+  function setProgress(pct) {
+    els.progressBar.style.width = Math.min(100, Math.round(pct)) + "%";
+  }
+
+  function showWarning(msg) {
+    els.warning.style.display = msg ? "block" : "none";
+    els.warning.textContent = msg || "";
+  }
+
+  // ── API Helpers ────────────────────────────────────────────────────────
+
+  function apiCall(method, params) {
+    return new Promise(function (resolve, reject) {
+      api.call(method, params, resolve, reject);
+    });
+  }
+
+  function apiMultiCall(calls) {
+    return new Promise(function (resolve, reject) {
+      api.multiCall(calls, resolve, reject);
+    });
+  }
+
+  // ── Group Hierarchy ────────────────────────────────────────────────────
+
+  function buildGroupHierarchy(groups, userGroupFilter) {
+    allGroups = {};
+    groups.forEach(function (g) {
+      allGroups[g.id] = g;
+    });
+
+    // Find root groups to walk from (user's group filter or CompanyGroup)
+    var rootIds = [];
+    if (userGroupFilter && userGroupFilter.length) {
+      userGroupFilter.forEach(function (g) {
+        rootIds.push(g.id || g);
+      });
+    } else {
+      // Default: CompanyGroup
+      groups.forEach(function (g) {
+        if (g.name === "CompanyGroup" || g.id === "GroupCompanyId") {
+          rootIds.push(g.id);
+        }
+      });
+    }
+
+    // Children map
+    var childrenMap = {};
+    groups.forEach(function (g) {
+      if (g.parent && g.parent.id) {
+        if (!childrenMap[g.parent.id]) childrenMap[g.parent.id] = [];
+        childrenMap[g.parent.id].push(g);
+      }
+    });
+
+    // Level 1 = regions, Level 2 = branches
+    var regions = [];
+    var branches = {};
+
+    rootIds.forEach(function (rootId) {
+      var level1 = childrenMap[rootId] || [];
+      level1.forEach(function (reg) {
+        regions.push(reg);
+        branches[reg.id] = childrenMap[reg.id] || [];
+      });
+    });
+
+    // Sort alphabetically
+    regions.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+    Object.keys(branches).forEach(function (rid) {
+      branches[rid].sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+    });
+
+    groupHierarchy = { regions: regions, branches: branches };
+  }
+
+  function mapDeviceGroups() {
+    deviceGroupMap = {};
+    allDevices.forEach(function (dev) {
+      if (!dev.groups || !dev.groups.length) {
+        deviceGroupMap[dev.id] = { region: "--", regionId: null, branch: "--", branchId: null };
+        return;
+      }
+
+      var devGroupIds = {};
+      dev.groups.forEach(function (g) { devGroupIds[g.id] = true; });
+
+      var foundRegion = null, foundBranch = null;
+
+      groupHierarchy.regions.forEach(function (reg) {
+        // Check if device is directly in region
+        if (devGroupIds[reg.id]) {
+          foundRegion = reg;
+        }
+        // Check branches
+        var brs = groupHierarchy.branches[reg.id] || [];
+        brs.forEach(function (br) {
+          if (devGroupIds[br.id]) {
+            foundRegion = reg;
+            foundBranch = br;
+          }
+        });
+      });
+
+      deviceGroupMap[dev.id] = {
+        region: foundRegion ? foundRegion.name : "--",
+        regionId: foundRegion ? foundRegion.id : null,
+        branch: foundBranch ? foundBranch.name : "--",
+        branchId: foundBranch ? foundBranch.id : null
+      };
+    });
+  }
+
+  function populateRegionDropdown() {
+    var current = els.region.value;
+    els.region.innerHTML = '<option value="all">All Regions</option>';
+    groupHierarchy.regions.forEach(function (r) {
+      var opt = document.createElement("option");
+      opt.value = r.id;
+      opt.textContent = r.name || r.id;
+      els.region.appendChild(opt);
+    });
+    if (current && els.region.querySelector('option[value="' + current + '"]')) {
+      els.region.value = current;
+    }
+  }
+
+  function populateBranchDropdown(regionId) {
+    var current = els.branch.value;
+    els.branch.innerHTML = '<option value="all">All Branches</option>';
+    if (regionId && regionId !== "all") {
+      var brs = groupHierarchy.branches[regionId] || [];
+      brs.forEach(function (b) {
+        var opt = document.createElement("option");
+        opt.value = b.id;
+        opt.textContent = b.name || b.id;
+        els.branch.appendChild(opt);
+      });
+    }
+    if (current && els.branch.querySelector('option[value="' + current + '"]')) {
+      els.branch.value = current;
+    }
+  }
+
+  // ── VIN Decode ─────────────────────────────────────────────────────────
+
+  function loadVinCache() {
+    try {
+      var cached = sessionStorage.getItem("celDashboard_vinCache");
+      if (cached) vinCache = JSON.parse(cached);
+    } catch (e) { /* ignore */ }
+  }
+
+  function saveVinCache() {
+    try {
+      sessionStorage.setItem("celDashboard_vinCache", JSON.stringify(vinCache));
+    } catch (e) { /* ignore */ }
+  }
+
+  function decodeVins(vins) {
+    // Filter out already-cached and empty VINs
+    var toFetch = [];
+    vins.forEach(function (vin) {
+      if (vin && vin.length >= 11 && !vinCache[vin]) {
+        toFetch.push(vin);
+      }
+    });
+
+    if (toFetch.length === 0) return Promise.resolve();
+
+    // Batch into groups of NHTSA_BATCH_SIZE
+    var batches = [];
+    for (var i = 0; i < toFetch.length; i += NHTSA_BATCH_SIZE) {
+      batches.push(toFetch.slice(i, i + NHTSA_BATCH_SIZE));
+    }
+
+    return batches.reduce(function (chain, batch) {
+      return chain.then(function () {
+        var vinList = batch.join(";");
+        var body = "format=json&data=" + encodeURIComponent(vinList);
+        return fetch("https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVINValuesBatch/", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: body
+        }).then(function (resp) {
+          return resp.json();
+        }).then(function (data) {
+          if (data && data.Results) {
+            data.Results.forEach(function (r) {
+              var vin = r.VIN;
+              if (vin) {
+                vinCache[vin] = {
+                  year: r.ModelYear || "--",
+                  make: r.Make || "--",
+                  vtype: r.BodyClass || "--",
+                  engine: r.EngineModel || "--"
+                };
+              }
+            });
+          }
+          saveVinCache();
+        }).catch(function () {
+          // NHTSA failure is non-fatal
+        });
+      });
+    }, Promise.resolve());
+  }
+
+  function populateVinDropdowns() {
+    var years = {}, makes = {}, types = {};
+    Object.keys(vinCache).forEach(function (vin) {
+      var v = vinCache[vin];
+      if (v.year && v.year !== "--") years[v.year] = true;
+      if (v.make && v.make !== "--") makes[v.make] = true;
+      if (v.vtype && v.vtype !== "--") types[v.vtype] = true;
+    });
+
+    populateFilterDropdown(els.year, years, "All Years");
+    populateFilterDropdown(els.make, makes, "All Makes");
+    populateFilterDropdown(els.vtype, types, "All Types");
+  }
+
+  function populateFilterDropdown(selectEl, valuesObj, allLabel) {
+    var current = selectEl.value;
+    selectEl.innerHTML = '<option value="all">' + allLabel + "</option>";
+    var sorted = Object.keys(valuesObj).sort();
+    sorted.forEach(function (v) {
+      var opt = document.createElement("option");
+      opt.value = v;
+      opt.textContent = v;
+      selectEl.appendChild(opt);
+    });
+    if (current && selectEl.querySelector('option[value="' + current + '"]')) {
+      selectEl.value = current;
+    }
+  }
+
+  function getVinInfo(device) {
+    var vin = device.vehicleIdentificationNumber || device.vin || "";
+    return vinCache[vin] || { year: "--", make: "--", vtype: "--", engine: "--" };
+  }
+
+  // ── Filtered Devices ───────────────────────────────────────────────────
+
+  function filteredDevices() {
+    var regionId = els.region.value;
+    var branchId = els.branch.value;
+    var year = els.year.value;
+    var make = els.make.value;
+    var vtype = els.vtype.value;
+
+    return allDevices.filter(function (dev) {
+      var dg = deviceGroupMap[dev.id] || {};
+      if (regionId !== "all" && dg.regionId !== regionId) return false;
+      if (branchId !== "all" && dg.branchId !== branchId) return false;
+
+      if (year !== "all" || make !== "all" || vtype !== "all") {
+        var vi = getVinInfo(dev);
+        if (year !== "all" && vi.year !== year) return false;
+        if (make !== "all" && vi.make !== make) return false;
+        if (vtype !== "all" && vi.vtype !== vtype) return false;
+      }
+
+      return true;
+    });
+  }
+
+  // ── Data Fetch ─────────────────────────────────────────────────────────
+
+  function fetchCelFaults(dateRange) {
+    return apiCall("Get", {
+      typeName: "FaultData",
+      search: {
+        fromDate: dateRange.from,
+        toDate: dateRange.to,
+        diagnosticSearch: { diagnosticType: "ObdFault" },
+        isCurrentState: false
+      },
+      resultsLimit: FAULT_LIMIT
+    }).then(function (faults) {
+      // Separate CEL (malfunctionLamp) faults
+      var celFaults = [];
+      var allFaults = faults;
+      faults.forEach(function (f) {
+        if (f.malfunctionLamp === true) {
+          celFaults.push(f);
+        }
+      });
+      return { celFaults: celFaults, allFaults: allFaults, hitLimit: faults.length >= FAULT_LIMIT };
+    });
+  }
+
+  function fetchTrips(devices, dateRange, onProgress) {
+    var calls = devices.map(function (dev) {
+      return ["Get", {
+        typeName: "Trip",
+        search: {
+          deviceSearch: { id: dev.id },
+          fromDate: dateRange.from,
+          toDate: dateRange.to
+        },
+        resultsLimit: 10000
+      }];
+    });
+
+    var batches = [];
+    for (var i = 0; i < calls.length; i += MULTI_CALL_BATCH) {
+      batches.push({ calls: calls.slice(i, i + MULTI_CALL_BATCH), startIdx: i });
+    }
+
+    var totalBatches = batches.length;
+    var completedBatches = 0;
+    var allTrips = {};
+
+    return batches.reduce(function (chain, batch) {
+      return chain.then(function () {
+        if (isAborted()) return;
+        return apiMultiCall(batch.calls).then(function (results) {
+          results.forEach(function (tripArr, idx) {
+            var devIdx = batch.startIdx + idx;
+            var devId = devices[devIdx].id;
+            if (Array.isArray(tripArr)) {
+              allTrips[devId] = tripArr;
+            }
+          });
+          completedBatches++;
+          if (onProgress) onProgress(completedBatches / totalBatches * 100);
+        });
+      });
+    }, Promise.resolve()).then(function () {
+      return allTrips;
+    });
+  }
+
+  // ── CEL% Computation ──────────────────────────────────────────────────
+
+  function computeCelMetrics(devices, celFaults, trips) {
+    var deviceCelPct = {};
+    var deviceDrivenDays = {};
+    var deviceCelDays = {};
+
+    // Build CEL days per device
+    var celDaysByDevice = {};
+    celFaults.forEach(function (f) {
+      var did = f.device ? f.device.id : null;
+      if (!did) return;
+      if (!celDaysByDevice[did]) celDaysByDevice[did] = {};
+      celDaysByDevice[did][dayKey(f.dateTime)] = true;
+    });
+
+    // Build driven days per device
+    devices.forEach(function (dev) {
+      var devTrips = trips[dev.id] || [];
+      var driven = {};
+      devTrips.forEach(function (trip) {
+        if (trip.start) driven[dayKey(trip.start)] = true;
+        if (trip.stop) driven[dayKey(trip.stop)] = true;
+      });
+
+      var drivenCount = Object.keys(driven).length;
+      deviceDrivenDays[dev.id] = drivenCount;
+
+      // Intersect driven days with CEL days
+      var celDays = celDaysByDevice[dev.id] || {};
+      var intersection = 0;
+      Object.keys(driven).forEach(function (dk) {
+        if (celDays[dk]) intersection++;
+      });
+
+      deviceCelDays[dev.id] = intersection;
+      deviceCelPct[dev.id] = drivenCount > 0 ? (intersection / drivenCount * 100) : 0;
+    });
+
+    return {
+      deviceCelPct: deviceCelPct,
+      deviceDrivenDays: deviceDrivenDays,
+      deviceCelDays: deviceCelDays
+    };
+  }
+
+  function computeFleetCelPct(deviceCelPct) {
+    var vals = [];
+    Object.keys(deviceCelPct).forEach(function (did) {
+      vals.push(deviceCelPct[did]);
+    });
+    if (vals.length === 0) return 0;
+    var sum = 0;
+    vals.forEach(function (v) { sum += v; });
+    return sum / vals.length;
+  }
+
+  // ── Trend Buckets ─────────────────────────────────────────────────────
+
+  function buildTrendBuckets(celFaults, trips, devices, granularity) {
+    // Build a map of all device-days with driven status and CEL status
+    var allDays = {};
+    var deviceSet = {};
+    devices.forEach(function (d) { deviceSet[d.id] = true; });
+
+    // Driven days across all devices
+    var drivenByDay = {};
+    devices.forEach(function (dev) {
+      var devTrips = trips[dev.id] || [];
+      devTrips.forEach(function (trip) {
+        if (trip.start) {
+          var dk = dayKey(trip.start);
+          if (!drivenByDay[dk]) drivenByDay[dk] = {};
+          drivenByDay[dk][dev.id] = true;
+          allDays[dk] = true;
+        }
+      });
+    });
+
+    // CEL days across all devices
+    var celByDay = {};
+    celFaults.forEach(function (f) {
+      var did = f.device ? f.device.id : null;
+      if (!did || !deviceSet[did]) return;
+      var dk = dayKey(f.dateTime);
+      if (!celByDay[dk]) celByDay[dk] = {};
+      celByDay[dk][did] = true;
+      allDays[dk] = true;
+    });
+
+    // Compute per-bucket
+    var keyFn;
+    if (granularity === "day") keyFn = function (dk) { return dk; };
+    else if (granularity === "week") keyFn = function (dk) { return weekKey(dk); };
+    else keyFn = function (dk) { return monthKey(dk); };
+
+    var buckets = {};
+    Object.keys(allDays).sort().forEach(function (dk) {
+      var bk = keyFn(dk);
+      if (!buckets[bk]) buckets[bk] = { totalDriven: 0, totalCelDriven: 0 };
+
+      var driven = drivenByDay[dk] || {};
+      var cel = celByDay[dk] || {};
+
+      Object.keys(driven).forEach(function (did) {
+        buckets[bk].totalDriven++;
+        if (cel[did]) buckets[bk].totalCelDriven++;
+      });
+    });
+
+    var result = [];
+    Object.keys(buckets).sort().forEach(function (bk) {
+      var b = buckets[bk];
+      var pct = b.totalDriven > 0 ? (b.totalCelDriven / b.totalDriven * 100) : 0;
+      result.push({ label: bk, value: pct });
+    });
+
+    return result;
+  }
+
+  // ── Build Rows ────────────────────────────────────────────────────────
+
+  function buildDtcRows(faults, devices) {
+    var deviceMap = {};
+    devices.forEach(function (d) { deviceMap[d.id] = d; });
+
+    // Count occurrences per device+code
+    var occMap = {};
+    faults.forEach(function (f) {
+      var did = f.device ? f.device.id : "?";
+      var code = (f.diagnostic && f.diagnostic.code) ? f.diagnostic.code.toString() : (f.diagnostic ? f.diagnostic.id : "--");
+      var key = did + "|" + code;
+      occMap[key] = (occMap[key] || 0) + 1;
+    });
+
+    return faults.map(function (f) {
+      var did = f.device ? f.device.id : "?";
+      var dev = deviceMap[did];
+      var code = (f.diagnostic && f.diagnostic.code) ? f.diagnostic.code.toString() : (f.diagnostic ? f.diagnostic.id : "--");
+      var key = did + "|" + code;
+
+      var state = "Active";
+      if (f.state === 2 || f.state === "Pending") state = "Pending";
+      else if (f.state === 0 || f.state === "Cleared" || f.state === "Inactive") state = "Cleared";
+
+      var severity = "Info";
+      if (f.malfunctionLamp === true) severity = "Critical";
+      else if (f.amberWarningLamp === true || f.protectWarningLamp === true) severity = "Warning";
+
+      return {
+        date: f.dateTime,
+        unit: dev ? dev.name : did,
+        code: code,
+        description: (f.diagnostic && f.diagnostic.name) ? f.diagnostic.name : "--",
+        state: state,
+        severity: severity,
+        faultClass: (f.diagnostic && f.diagnostic.source) ? f.diagnostic.source.name || "--" : "--",
+        controller: f.controller ? (f.controller.name || f.controller.id || "--") : "--",
+        count: occMap[key] || 1
+      };
+    });
+  }
+
+  function buildUnitRows(devices, dateRange) {
+    var now = new Date();
+
+    return devices.map(function (dev) {
+      var vi = getVinInfo(dev);
+      var dg = deviceGroupMap[dev.id] || {};
+      var celPct = celData.deviceCelPct[dev.id] || 0;
+      var status = deviceStatusMap[dev.id];
+      var lastReported = status ? status.dateTime || status.lastCommunication : null;
+
+      // Count active DTCs for this device
+      var activeDtcs = 0;
+      var dtcCodes = {};
+      var repeatDtcs = 0;
+      celData.allFaults.forEach(function (f) {
+        if (f.device && f.device.id === dev.id) {
+          var code = (f.diagnostic && f.diagnostic.code) ? f.diagnostic.code.toString() : (f.diagnostic ? f.diagnostic.id : "--");
+          if (f.malfunctionLamp === true) activeDtcs++;
+          dtcCodes[code] = (dtcCodes[code] || 0) + 1;
+        }
+      });
+      Object.keys(dtcCodes).forEach(function (c) {
+        if (dtcCodes[c] > 1) repeatDtcs++;
+      });
+
+      return {
+        id: dev.id,
+        name: dev.name || dev.id,
+        region: dg.region || "--",
+        branch: dg.branch || "--",
+        year: vi.year,
+        make: vi.make,
+        vtype: vi.vtype,
+        engine: vi.engine,
+        celPct: celPct,
+        activeDtcs: activeDtcs,
+        repeatDtcs: repeatDtcs,
+        lastReported: lastReported
+      };
+    });
+  }
+
+  function buildCommRows(devices) {
+    var now = new Date();
+
+    return devices.map(function (dev) {
+      var dg = deviceGroupMap[dev.id] || {};
+      var status = deviceStatusMap[dev.id];
+      var lastComm = status ? (status.dateTime || status.lastCommunication || null) : null;
+      var daysSince = 0;
+      var isDriving = false;
+
+      if (lastComm) {
+        daysSince = Math.floor((now.getTime() - new Date(lastComm).getTime()) / 86400000);
+      }
+
+      if (status && status.isDriving !== undefined) {
+        isDriving = status.isDriving;
+      }
+
+      var reportingStatus = daysSince <= NOT_REPORTING_DAYS ? "Reporting" : "Not Reporting";
+
+      return {
+        id: dev.id,
+        name: dev.name || dev.id,
+        region: dg.region || "--",
+        branch: dg.branch || "--",
+        lastComm: lastComm,
+        daysSince: daysSince,
+        status: reportingStatus,
+        driving: isDriving ? "Yes" : "No"
+      };
+    });
+  }
+
+  // ── Rendering ─────────────────────────────────────────────────────────
+
+  function renderActiveTab() {
+    switch (activeTab) {
+      case "trend": renderTrend(); break;
+      case "dtc": renderDtcTable(); break;
+      case "unit": renderUnitTable(); break;
+      case "comm": renderCommTable(); break;
+    }
+  }
+
+  // ── Trend Tab ─────────────────────────────────────────────────────────
+
+  function renderTrend() {
+    renderKpis();
+    renderChart();
+    renderTop10();
+  }
+
+  function renderKpis() {
+    var devices = filteredDevices();
+    var deviceSet = {};
+    devices.forEach(function (d) { deviceSet[d.id] = true; });
+
+    // Current CEL%: average across filtered devices that have data
+    var vals = [];
+    devices.forEach(function (d) {
+      if (celData.deviceDrivenDays[d.id] > 0) {
+        vals.push(celData.deviceCelPct[d.id] || 0);
+      }
+    });
+
+    var periodPct = vals.length > 0 ? vals.reduce(function (a, b) { return a + b; }, 0) / vals.length : 0;
+
+    // Active CEL count: devices with any CEL day > 0
+    var activeCelCount = 0;
+    devices.forEach(function (d) {
+      if ((celData.deviceCelDays[d.id] || 0) > 0) activeCelCount++;
+    });
+
+    els.kpiCurrent.textContent = formatPct(periodPct);
+    els.kpiPeriod.textContent = formatPct(periodPct);
+
+    // Prior period comparison
+    // We approximate by splitting the trend buckets in half
+    var buckets = celData.trendBuckets;
+    if (buckets.length >= 2) {
+      var mid = Math.floor(buckets.length / 2);
+      var priorSum = 0, priorCount = 0;
+      var currentSum = 0, currentCount = 0;
+      for (var i = 0; i < mid; i++) { priorSum += buckets[i].value; priorCount++; }
+      for (var j = mid; j < buckets.length; j++) { currentSum += buckets[j].value; currentCount++; }
+      var priorAvg = priorCount > 0 ? priorSum / priorCount : 0;
+      var currentAvg = currentCount > 0 ? currentSum / currentCount : 0;
+      var diff = currentAvg - priorAvg;
+
+      els.kpiPrior.textContent = (diff >= 0 ? "+" : "") + diff.toFixed(1) + "%";
+      els.kpiPrior.className = "cel-kpi-value " + (diff > 0 ? "cel-trend-up" : diff < 0 ? "cel-trend-down" : "");
+      els.kpiCurrent.textContent = formatPct(currentAvg);
+    } else {
+      els.kpiPrior.textContent = "--";
+      els.kpiPrior.className = "cel-kpi-value";
+    }
+
+    els.kpiActive.textContent = activeCelCount;
+  }
+
+  function renderChart() {
+    var buckets = celData.trendBuckets;
+    var labels = buckets.map(function (b) { return b.label; });
+    var values = buckets.map(function (b) { return b.value; });
+
+    if (chartInstance) {
+      chartInstance.data.labels = labels;
+      chartInstance.data.datasets[0].data = values;
+      chartInstance.update("none");
+      return;
+    }
+
+    var ctx = els.chart.getContext("2d");
+    chartInstance = new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: labels,
+        datasets: [{
+          label: "CEL%",
+          data: values,
+          borderColor: "#4a90d9",
+          backgroundColor: "rgba(74, 144, 217, 0.1)",
+          fill: true,
+          tension: 0.3,
+          pointRadius: 3,
+          pointBackgroundColor: "#4a90d9"
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false }
+        },
+        scales: {
+          y: {
+            min: 0,
+            max: 100,
+            ticks: {
+              callback: function (v) { return v + "%"; }
+            },
+            title: { display: true, text: "CEL%" }
+          },
+          x: {
+            title: { display: true, text: "Period" }
+          }
+        }
+      }
+    });
+  }
+
+  function renderTop10() {
+    var devices = filteredDevices();
+    var deviceSet = {};
+    devices.forEach(function (d) { deviceSet[d.id] = true; });
+
+    // Top 10 Highest CEL%
+    var celArr = [];
+    devices.forEach(function (d) {
+      if (celData.deviceDrivenDays[d.id] > 0) {
+        celArr.push({ name: d.name || d.id, pct: celData.deviceCelPct[d.id] || 0 });
+      }
+    });
+    celArr.sort(function (a, b) { return b.pct - a.pct; });
+    renderSmallTable(els.top10Cel, celArr.slice(0, 10), function (r) {
+      return "<td>" + escapeHtml(r.name) + "</td><td>" + formatPct(r.pct) + "</td>";
+    });
+
+    // Top 10 Highest DTC Count (per device)
+    var dtcCount = {};
+    celData.allFaults.forEach(function (f) {
+      var did = f.device ? f.device.id : null;
+      if (!did || !deviceSet[did]) return;
+      dtcCount[did] = (dtcCount[did] || 0) + 1;
+    });
+    var dtcArr = [];
+    Object.keys(dtcCount).forEach(function (did) {
+      var d = allDevices.find(function (dv) { return dv.id === did; });
+      dtcArr.push({ name: d ? d.name : did, count: dtcCount[did] });
+    });
+    dtcArr.sort(function (a, b) { return b.count - a.count; });
+    renderSmallTable(els.top10Dtc, dtcArr.slice(0, 10), function (r) {
+      return "<td>" + escapeHtml(r.name) + "</td><td>" + r.count + "</td>";
+    });
+
+    // Top 10 Most Recurring Faults (by DTC code)
+    var codeCount = {};
+    celData.allFaults.forEach(function (f) {
+      var did = f.device ? f.device.id : null;
+      if (!did || !deviceSet[did]) return;
+      var code = (f.diagnostic && f.diagnostic.code) ? f.diagnostic.code.toString() : (f.diagnostic ? f.diagnostic.id : "--");
+      codeCount[code] = (codeCount[code] || 0) + 1;
+    });
+    var codeArr = [];
+    Object.keys(codeCount).forEach(function (code) {
+      codeArr.push({ code: code, count: codeCount[code] });
+    });
+    codeArr.sort(function (a, b) { return b.count - a.count; });
+    renderSmallTable(els.top10Recurring, codeArr.slice(0, 10), function (r) {
+      return "<td>" + escapeHtml(r.code) + "</td><td>" + r.count + "</td>";
+    });
+  }
+
+  function renderSmallTable(tbody, rows, cellFn) {
+    var frag = document.createDocumentFragment();
+    rows.forEach(function (r) {
+      var tr = document.createElement("tr");
+      tr.innerHTML = cellFn(r);
+      frag.appendChild(tr);
+    });
+    tbody.innerHTML = "";
+    tbody.appendChild(frag);
+    if (rows.length === 0) {
+      var tr = document.createElement("tr");
+      tr.innerHTML = '<td colspan="2" style="text-align:center;color:#888;">No data</td>';
+      tbody.appendChild(tr);
+    }
+  }
+
+  // ── DTC Table ─────────────────────────────────────────────────────────
+
+  function renderDtcTable() {
+    var rows = celData.dtcRows.slice();
+    var stateFilter = els.dtcState.value;
+    var searchTerm = els.dtcSearch.value.toLowerCase();
+
+    if (stateFilter !== "all") {
+      rows = rows.filter(function (r) { return r.state === stateFilter; });
+    }
+    if (searchTerm) {
+      rows = rows.filter(function (r) {
+        return r.code.toLowerCase().indexOf(searchTerm) >= 0 ||
+               r.unit.toLowerCase().indexOf(searchTerm) >= 0 ||
+               r.description.toLowerCase().indexOf(searchTerm) >= 0;
+      });
+    }
+
+    sortRows(rows, sortState.dtc);
+    renderTableBody(els.dtcBody, rows, function (r) {
+      var stateClass = "cel-state-" + r.state.toLowerCase();
+      var sevClass = "cel-badge cel-badge-" + r.severity.toLowerCase();
+      return '<td>' + formatDate(r.date) + '</td>' +
+        '<td>' + escapeHtml(r.unit) + '</td>' +
+        '<td>' + escapeHtml(r.code) + '</td>' +
+        '<td>' + escapeHtml(r.description) + '</td>' +
+        '<td><span class="' + stateClass + '">' + r.state + '</span></td>' +
+        '<td><span class="' + sevClass + '">' + r.severity + '</span></td>' +
+        '<td>' + escapeHtml(r.faultClass) + '</td>' +
+        '<td>' + escapeHtml(r.controller) + '</td>' +
+        '<td>' + r.count + '</td>';
+    });
+  }
+
+  // ── Unit Table ────────────────────────────────────────────────────────
+
+  function renderUnitTable() {
+    var rows = celData.unitRows.slice();
+    var searchTerm = els.unitSearch.value.toLowerCase();
+
+    if (searchTerm) {
+      rows = rows.filter(function (r) {
+        return r.name.toLowerCase().indexOf(searchTerm) >= 0 ||
+               r.region.toLowerCase().indexOf(searchTerm) >= 0 ||
+               r.branch.toLowerCase().indexOf(searchTerm) >= 0 ||
+               r.make.toLowerCase().indexOf(searchTerm) >= 0;
+      });
+    }
+
+    sortRows(rows, sortState.unit);
+    renderTableBody(els.unitBody, rows, function (r) {
+      return '<td>' + escapeHtml(r.name) + '</td>' +
+        '<td>' + escapeHtml(r.region) + '</td>' +
+        '<td>' + escapeHtml(r.branch) + '</td>' +
+        '<td>' + escapeHtml(r.year) + '</td>' +
+        '<td>' + escapeHtml(r.make) + '</td>' +
+        '<td>' + escapeHtml(r.vtype) + '</td>' +
+        '<td>' + escapeHtml(r.engine) + '</td>' +
+        '<td>' + formatPct(r.celPct) + '</td>' +
+        '<td>' + r.activeDtcs + '</td>' +
+        '<td>' + r.repeatDtcs + '</td>' +
+        '<td>' + formatDate(r.lastReported) + '</td>';
+    });
+  }
+
+  // ── Comm Table ────────────────────────────────────────────────────────
+
+  function renderCommTable() {
+    var rows = celData.commRows.slice();
+    var statusFilter = els.commStatus.value;
+    var searchTerm = els.commSearch.value.toLowerCase();
+
+    if (statusFilter !== "all") {
+      rows = rows.filter(function (r) {
+        if (statusFilter === "reporting") return r.status === "Reporting";
+        return r.status === "Not Reporting";
+      });
+    }
+    if (searchTerm) {
+      rows = rows.filter(function (r) {
+        return r.name.toLowerCase().indexOf(searchTerm) >= 0 ||
+               r.region.toLowerCase().indexOf(searchTerm) >= 0 ||
+               r.branch.toLowerCase().indexOf(searchTerm) >= 0;
+      });
+    }
+
+    sortRows(rows, sortState.comm);
+    renderTableBody(els.commBody, rows, function (r) {
+      var statusClass = r.status === "Reporting" ? "cel-status-reporting" : "cel-status-not-reporting";
+      return '<td>' + escapeHtml(r.name) + '</td>' +
+        '<td>' + escapeHtml(r.region) + '</td>' +
+        '<td>' + escapeHtml(r.branch) + '</td>' +
+        '<td>' + formatDate(r.lastComm) + '</td>' +
+        '<td>' + r.daysSince + '</td>' +
+        '<td><span class="' + statusClass + '">' + r.status + '</span></td>' +
+        '<td>' + r.driving + '</td>';
+    });
+  }
+
+  // ── Table Utilities ───────────────────────────────────────────────────
+
+  function renderTableBody(tbody, rows, cellFn) {
+    var frag = document.createDocumentFragment();
+    rows.forEach(function (r) {
+      var tr = document.createElement("tr");
+      tr.innerHTML = cellFn(r);
+      frag.appendChild(tr);
+    });
+    tbody.innerHTML = "";
+    tbody.appendChild(frag);
+  }
+
+  function sortRows(rows, state) {
+    var col = state.col;
+    var dir = state.dir === "asc" ? 1 : -1;
+
+    rows.sort(function (a, b) {
+      var va = a[col], vb = b[col];
+      if (va == null) va = "";
+      if (vb == null) vb = "";
+      if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
+      if (typeof va === "string" && typeof vb === "string") return va.localeCompare(vb) * dir;
+      return String(va).localeCompare(String(vb)) * dir;
+    });
+  }
+
+  function handleSort(tableId, th) {
+    var col = th.dataset.col;
+    if (!col) return;
+    var state = sortState[tableId];
+    if (state.col === col) {
+      state.dir = state.dir === "asc" ? "desc" : "asc";
+    } else {
+      state.col = col;
+      state.dir = "asc";
+    }
+
+    // Update arrow indicators
+    var table = th.closest("table");
+    table.querySelectorAll(".cel-sortable").forEach(function (h) {
+      h.classList.remove("cel-sort-asc", "cel-sort-desc");
+    });
+    th.classList.add("cel-sort-" + state.dir);
+
+    // Re-render
+    switch (tableId) {
+      case "dtc": renderDtcTable(); break;
+      case "unit": renderUnitTable(); break;
+      case "comm": renderCommTable(); break;
+    }
+  }
+
+  // ── CSV Export ─────────────────────────────────────────────────────────
+
+  function exportCsv(filename, headers, rows) {
+    var lines = [headers.join(",")];
+    rows.forEach(function (r) {
+      var vals = headers.map(function (h) {
+        var v = r[h] != null ? String(r[h]) : "";
+        // Escape commas and quotes
+        if (v.indexOf(",") >= 0 || v.indexOf('"') >= 0 || v.indexOf("\n") >= 0) {
+          v = '"' + v.replace(/"/g, '""') + '"';
+        }
+        return v;
+      });
+      lines.push(vals.join(","));
+    });
+
+    var blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // ── Main Load (Apply) ─────────────────────────────────────────────────
+
+  function loadData() {
+    if (abortController) abortController.abort();
+    abortController = new AbortController();
+
+    showLoading(true, "Fetching fault data...");
+    showEmpty(false);
+    showWarning(null);
+    setProgress(0);
+
+    var dateRange = getDateRange();
+    var devices = filteredDevices();
+
+    if (devices.length === 0) {
+      showLoading(false);
+      showEmpty(true);
+      return;
+    }
+
+    els.progress.textContent = devices.length + " vehicles selected";
+
+    // Step 1: Fetch fault data
+    fetchCelFaults(dateRange).then(function (result) {
+      if (isAborted()) return;
+
+      celData.celFaults = result.celFaults;
+      celData.allFaults = result.allFaults;
+
+      if (result.hitLimit) {
+        showWarning("Fault data reached " + FAULT_LIMIT.toLocaleString() + " result limit. Some faults may be missing. Try narrowing the date range or filters.");
+      }
+
+      // Step 2: Fetch trips
+      showLoading(true, "Fetching trip data...");
+      return fetchTrips(devices, dateRange, function (pct) {
+        setProgress(pct);
+        els.loadingText.textContent = "Fetching trip data... " + Math.round(pct) + "%";
+      });
+    }).then(function (trips) {
+      if (isAborted()) return;
+      if (!trips) return;
+
+      celData.trips = trips;
+
+      // Step 3: Compute metrics
+      showLoading(true, "Computing metrics...");
+      var metrics = computeCelMetrics(devices, celData.celFaults, trips);
+      celData.deviceCelPct = metrics.deviceCelPct;
+      celData.deviceDrivenDays = metrics.deviceDrivenDays;
+      celData.deviceCelDays = metrics.deviceCelDays;
+
+      // Build trend buckets
+      celData.trendBuckets = buildTrendBuckets(celData.celFaults, trips, devices, currentGranularity);
+
+      // Build table rows
+      celData.dtcRows = buildDtcRows(celData.allFaults, devices);
+      celData.unitRows = buildUnitRows(devices, dateRange);
+      celData.commRows = buildCommRows(devices);
+
+      lastFetchRange = dateRange;
+
+      // Render
+      renderActiveTab();
+      showLoading(false);
+    }).catch(function (err) {
+      if (!isAborted()) {
+        console.error("CEL Dashboard error:", err);
+        showLoading(false);
+        showEmpty(true);
+        els.empty.textContent = "Error loading data. Please try again.";
+      }
+    });
+  }
+
+  // ── UI Event Handlers ─────────────────────────────────────────────────
+
+  function onPresetClick(e) {
+    var btn = e.target.closest(".cel-preset");
+    if (!btn) return;
+
+    document.querySelectorAll(".cel-preset").forEach(function (b) { b.classList.remove("active"); });
+    btn.classList.add("active");
+
+    var isCustom = btn.dataset.preset === "custom";
+    els.customDates.style.display = isCustom ? "" : "none";
+
+    if (isCustom && !els.fromDate.value) {
+      var now = new Date();
+      var from = new Date(now);
+      from.setDate(from.getDate() - 30);
+      els.fromDate.value = from.toISOString().slice(0, 10);
+      els.toDate.value = now.toISOString().slice(0, 10);
+    }
+  }
+
+  function onTabClick(e) {
+    var btn = e.target.closest(".cel-tab");
+    if (!btn) return;
+
+    document.querySelectorAll(".cel-tab").forEach(function (t) { t.classList.remove("active"); });
+    btn.classList.add("active");
+
+    activeTab = btn.dataset.tab;
+
+    // Show/hide panels
+    document.querySelectorAll(".cel-panel").forEach(function (p) { p.classList.remove("active"); });
+    var panel = $("cel-panel-" + activeTab);
+    if (panel) panel.classList.add("active");
+
+    // Show/hide KPI strip (only on trend tab)
+    els.kpiStrip.style.display = activeTab === "trend" ? "flex" : "none";
+
+    // Re-render active tab
+    if (celData.trendBuckets.length > 0 || celData.dtcRows.length > 0 || celData.unitRows.length > 0) {
+      renderActiveTab();
+    }
+  }
+
+  function onGranularityClick(e) {
+    var btn = e.target.closest(".cel-gran-btn");
+    if (!btn) return;
+
+    document.querySelectorAll(".cel-gran-btn").forEach(function (b) { b.classList.remove("active"); });
+    btn.classList.add("active");
+
+    currentGranularity = btn.dataset.gran;
+
+    // Re-bucket from in-memory data (no API call)
+    var devices = filteredDevices();
+    celData.trendBuckets = buildTrendBuckets(celData.celFaults, celData.trips, devices, currentGranularity);
+    renderChart();
+    renderKpis();
+  }
+
+  function onRegionChange() {
+    populateBranchDropdown(els.region.value);
+  }
+
+  // ── Add-In Lifecycle ──────────────────────────────────────────────────
+
+  return {
+    initialize: function (freshApi, state, callback) {
+      api = freshApi;
+
+      // Cache DOM refs
+      els.fromDate = $("cel-from");
+      els.toDate = $("cel-to");
+      els.customDates = $("cel-custom-dates");
+      els.region = $("cel-region");
+      els.branch = $("cel-branch");
+      els.year = $("cel-year");
+      els.make = $("cel-make");
+      els.vtype = $("cel-vtype");
+      els.apply = $("cel-apply");
+      els.progress = $("cel-progress");
+      els.loading = $("cel-loading");
+      els.loadingText = $("cel-loading-text");
+      els.progressBar = $("cel-progress-bar");
+      els.empty = $("cel-empty");
+      els.warning = $("cel-warning");
+      els.chart = $("cel-chart");
+      els.kpiStrip = $("cel-kpi-strip");
+      els.kpiCurrent = $("cel-kpi-current");
+      els.kpiPeriod = $("cel-kpi-period");
+      els.kpiPrior = $("cel-kpi-prior");
+      els.kpiActive = $("cel-kpi-active");
+      els.top10Cel = $("cel-top10-cel");
+      els.top10Dtc = $("cel-top10-dtc");
+      els.top10Recurring = $("cel-top10-recurring");
+      els.dtcState = $("cel-dtc-state");
+      els.dtcSearch = $("cel-dtc-search");
+      els.dtcBody = $("cel-dtc-body");
+      els.unitSearch = $("cel-unit-search");
+      els.unitBody = $("cel-unit-body");
+      els.commStatus = $("cel-comm-status");
+      els.commSearch = $("cel-comm-search");
+      els.commBody = $("cel-comm-body");
+
+      // Event listeners
+      els.apply.addEventListener("click", loadData);
+      document.querySelector(".cel-presets").addEventListener("click", onPresetClick);
+      $("cel-tabs").addEventListener("click", onTabClick);
+      document.querySelector(".cel-granularity").addEventListener("click", onGranularityClick);
+      els.region.addEventListener("change", onRegionChange);
+
+      // Table sort listeners
+      $("cel-dtc-table").addEventListener("click", function (e) {
+        var th = e.target.closest(".cel-sortable");
+        if (th) handleSort("dtc", th);
+      });
+      $("cel-unit-table").addEventListener("click", function (e) {
+        var th = e.target.closest(".cel-sortable");
+        if (th) handleSort("unit", th);
+      });
+      $("cel-comm-table").addEventListener("click", function (e) {
+        var th = e.target.closest(".cel-sortable");
+        if (th) handleSort("comm", th);
+      });
+
+      // Search / filter listeners (re-render on input)
+      els.dtcState.addEventListener("change", renderDtcTable);
+      els.dtcSearch.addEventListener("input", renderDtcTable);
+      els.unitSearch.addEventListener("input", renderUnitTable);
+      els.commStatus.addEventListener("change", renderCommTable);
+      els.commSearch.addEventListener("input", renderCommTable);
+
+      // CSV export listeners
+      $("cel-unit-export").addEventListener("click", function () {
+        var headers = ["name", "region", "branch", "year", "make", "vtype", "engine", "celPct", "activeDtcs", "repeatDtcs", "lastReported"];
+        exportCsv("cel_unit_detail.csv", headers, celData.unitRows);
+      });
+      $("cel-comm-export").addEventListener("click", function () {
+        var headers = ["name", "region", "branch", "lastComm", "daysSince", "status", "driving"];
+        exportCsv("cel_comm_report.csv", headers, celData.commRows);
+      });
+
+      // Load VIN cache from sessionStorage
+      loadVinCache();
+
+      // Load foundation data in parallel: Devices + Groups + DeviceStatusInfo
+      var groupFilter = state.getGroupFilter();
+
+      Promise.all([
+        apiCall("Get", { typeName: "Device", resultsLimit: 5000 }),
+        apiCall("Get", { typeName: "Group", resultsLimit: 5000 }),
+        apiCall("Get", { typeName: "DeviceStatusInfo", resultsLimit: 5000 })
+      ]).then(function (results) {
+        allDevices = results[0] || [];
+        var groups = results[1] || [];
+        var statusArr = results[2] || [];
+
+        // Build device status map
+        statusArr.forEach(function (s) {
+          if (s.device && s.device.id) {
+            deviceStatusMap[s.device.id] = s;
+          }
+        });
+
+        // Build group hierarchy and map devices
+        buildGroupHierarchy(groups, groupFilter);
+        mapDeviceGroups();
+        populateRegionDropdown();
+        populateBranchDropdown(els.region.value);
+
+        // Decode VINs
+        var vins = allDevices.map(function (d) {
+          return d.vehicleIdentificationNumber || d.vin || "";
+        }).filter(function (v) { return v && v.length >= 11; });
+
+        return decodeVins(vins);
+      }).then(function () {
+        populateVinDropdowns();
+        callback();
+      }).catch(function (err) {
+        console.error("CEL Dashboard init error:", err);
+        callback();
+      });
+    },
+
+    focus: function (freshApi, state) {
+      api = freshApi;
+
+      // Refresh devices and status
+      Promise.all([
+        apiCall("Get", { typeName: "Device", resultsLimit: 5000 }),
+        apiCall("Get", { typeName: "DeviceStatusInfo", resultsLimit: 5000 })
+      ]).then(function (results) {
+        allDevices = results[0] || [];
+        var statusArr = results[1] || [];
+        statusArr.forEach(function (s) {
+          if (s.device && s.device.id) {
+            deviceStatusMap[s.device.id] = s;
+          }
+        });
+        mapDeviceGroups();
+      }).catch(function () {});
+
+      // Auto-load on first focus
+      if (firstFocus) {
+        firstFocus = false;
+        loadData();
+      }
+    },
+
+    blur: function () {
+      if (abortController) {
+        abortController.abort();
+        abortController = null;
+      }
+      showLoading(false);
+    }
+  };
+};

@@ -1,0 +1,16 @@
+{
+  "name": "CEL Dashboard",
+  "supportEmail": "support@example.com",
+  "version": "1.0",
+  "items": [
+    {
+      "url": "https://cpellegrinoGT.github.io/addin-cel-dashboard/cel.html",
+      "path": "ActivityLink/",
+      "menuName": {
+        "en": "CEL Dashboard"
+      },
+      "svgIcon": "https://cpellegrinoGT.github.io/addin-cel-dashboard/images/icon.svg"
+    }
+  ],
+  "files": {}
+}
