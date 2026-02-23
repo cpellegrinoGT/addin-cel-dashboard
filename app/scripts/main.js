@@ -562,44 +562,54 @@ geotab.addin.celDashboard = function () {
   }
 
   function fetchTrips(devices, dateRange, onProgress) {
-    var calls = devices.map(function (dev) {
-      return ["Get", {
-        typeName: "Trip",
-        search: {
-          deviceSearch: { id: dev.id },
-          fromDate: dateRange.from,
-          toDate: dateRange.to
-        },
-        resultsLimit: 10000
-      }];
-    });
+    // Fleet-level trip queries chunked by 7-day windows.
+    // ~5 calls for 30 days, ~13 for 90 days (vs 33 batches of 50 per-device calls).
+    var CHUNK_DAYS = 7;
+    var TRIP_LIMIT = 50000;
 
-    var batches = [];
-    for (var i = 0; i < calls.length; i += MULTI_CALL_BATCH) {
-      batches.push({ calls: calls.slice(i, i + MULTI_CALL_BATCH), startIdx: i });
+    var fromMs = new Date(dateRange.from).getTime();
+    var toMs = new Date(dateRange.to).getTime();
+    var chunks = [];
+    var cursor = fromMs;
+    while (cursor < toMs) {
+      var chunkEnd = Math.min(cursor + CHUNK_DAYS * 86400000, toMs);
+      chunks.push({
+        from: new Date(cursor).toISOString(),
+        to: new Date(chunkEnd).toISOString()
+      });
+      cursor = chunkEnd;
     }
 
-    var totalBatches = batches.length;
-    var completedBatches = 0;
-    var allTrips = {};
+    // Build device ID set for filtering results
+    var deviceSet = {};
+    devices.forEach(function (d) { deviceSet[d.id] = true; });
 
-    return batches.reduce(function (chain, batch, batchIdx) {
+    var totalChunks = chunks.length;
+    var completedChunks = 0;
+    var allTrips = {}; // deviceId -> [trip]
+
+    return chunks.reduce(function (chain, chunk, chunkIdx) {
       return chain.then(function () {
         if (isAborted()) return;
-        // Throttle: 250ms delay between batches to avoid rate limits
-        var pause = batchIdx > 0 ? delay(250) : Promise.resolve();
+        var pause = chunkIdx > 0 ? delay(300) : Promise.resolve();
         return pause.then(function () {
           if (isAborted()) return;
-          return apiMultiCallRetry(batch.calls, 3).then(function (results) {
-            results.forEach(function (tripArr, idx) {
-              var devIdx = batch.startIdx + idx;
-              var devId = devices[devIdx].id;
-              if (Array.isArray(tripArr)) {
-                allTrips[devId] = tripArr;
-              }
+          return apiCall("Get", {
+            typeName: "Trip",
+            search: {
+              fromDate: chunk.from,
+              toDate: chunk.to
+            },
+            resultsLimit: TRIP_LIMIT
+          }).then(function (trips) {
+            trips.forEach(function (trip) {
+              var did = trip.device ? trip.device.id : null;
+              if (!did || !deviceSet[did]) return;
+              if (!allTrips[did]) allTrips[did] = [];
+              allTrips[did].push(trip);
             });
-            completedBatches++;
-            if (onProgress) onProgress(completedBatches / totalBatches * 100);
+            completedChunks++;
+            if (onProgress) onProgress(completedChunks / totalChunks * 100);
           });
         });
       });
