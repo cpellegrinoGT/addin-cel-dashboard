@@ -12,7 +12,6 @@ geotab.addin.celDashboard = function () {
   // ── Constants ──────────────────────────────────────────────────────────
   var MULTI_CALL_BATCH = 50;
   var FAULT_LIMIT = 50000;
-  var NHTSA_BATCH_SIZE = 50;
   var NOT_REPORTING_DAYS = 3;
 
   // CEL diagnostic names to match
@@ -337,74 +336,24 @@ geotab.addin.celDashboard = function () {
     }
   }
 
-  // ── VIN Decode ─────────────────────────────────────────────────────────
+  // ── Vehicle Info (from MyGeotab Device entity) ─────────────────────────
 
-  function loadVinCache() {
-    try {
-      var cached = sessionStorage.getItem("celDashboard_vinCache");
-      if (cached) vinCache = JSON.parse(cached);
-    } catch (e) { /* ignore */ }
-  }
-
-  function saveVinCache() {
-    try {
-      sessionStorage.setItem("celDashboard_vinCache", JSON.stringify(vinCache));
-    } catch (e) { /* ignore */ }
-  }
-
-  function decodeVins(vins) {
-    // Filter out already-cached and empty VINs
-    var toFetch = [];
-    vins.forEach(function (vin) {
-      if (vin && vin.length >= 11 && !vinCache[vin]) {
-        toFetch.push(vin);
-      }
+  function buildDeviceInfoMap() {
+    vinCache = {};
+    allDevices.forEach(function (d) {
+      vinCache[d.id] = {
+        year: d.year || d.modelYear || "--",
+        make: d.make || "--",
+        vtype: d.vehicleType || d.deviceType || "--",
+        engine: d.engineType || "--"
+      };
     });
-
-    if (toFetch.length === 0) return Promise.resolve();
-
-    // Batch into groups of NHTSA_BATCH_SIZE
-    var batches = [];
-    for (var i = 0; i < toFetch.length; i += NHTSA_BATCH_SIZE) {
-      batches.push(toFetch.slice(i, i + NHTSA_BATCH_SIZE));
-    }
-
-    return batches.reduce(function (chain, batch) {
-      return chain.then(function () {
-        var vinList = batch.join(";");
-        var body = "format=json&data=" + encodeURIComponent(vinList);
-        return fetch("https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVINValuesBatch/", {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: body
-        }).then(function (resp) {
-          return resp.json();
-        }).then(function (data) {
-          if (data && data.Results) {
-            data.Results.forEach(function (r) {
-              var vin = r.VIN;
-              if (vin) {
-                vinCache[vin] = {
-                  year: r.ModelYear || "--",
-                  make: r.Make || "--",
-                  vtype: r.BodyClass || "--",
-                  engine: r.EngineModel || "--"
-                };
-              }
-            });
-          }
-          saveVinCache();
-        }).catch(function () {
-          // NHTSA failure is non-fatal
-        });
-      });
-    }, Promise.resolve());
   }
 
   function populateVinDropdowns() {
     var years = {}, makes = {}, types = {};
-    Object.keys(vinCache).forEach(function (vin) {
-      var v = vinCache[vin];
+    Object.keys(vinCache).forEach(function (did) {
+      var v = vinCache[did];
       if (v.year && v.year !== "--") years[v.year] = true;
       if (v.make && v.make !== "--") makes[v.make] = true;
       if (v.vtype && v.vtype !== "--") types[v.vtype] = true;
@@ -431,8 +380,7 @@ geotab.addin.celDashboard = function () {
   }
 
   function getVinInfo(device) {
-    var vin = device.vehicleIdentificationNumber || device.vin || "";
-    return vinCache[vin] || { year: "--", make: "--", vtype: "--", engine: "--" };
+    return vinCache[device.id] || { year: "--", make: "--", vtype: "--", engine: "--" };
   }
 
   // ── Filtered Devices ───────────────────────────────────────────────────
@@ -1541,9 +1489,6 @@ geotab.addin.celDashboard = function () {
         exportCsv("cel_comm_report.csv", headers, celData.commRows);
       });
 
-      // Load VIN cache from sessionStorage
-      loadVinCache();
-
       // Load foundation data in parallel: Devices + Groups + DeviceStatusInfo
       var groupFilter = state.getGroupFilter();
 
@@ -1570,13 +1515,8 @@ geotab.addin.celDashboard = function () {
         populateBranchDropdown(els.region.value);
         populateVehicleDropdown();
 
-        // Decode VINs
-        var vins = allDevices.map(function (d) {
-          return d.vehicleIdentificationNumber || d.vin || "";
-        }).filter(function (v) { return v && v.length >= 11; });
-
-        return decodeVins(vins);
-      }).then(function () {
+        // Build vehicle info from Device entity properties
+        buildDeviceInfoMap();
         populateVinDropdowns();
         callback();
       }).catch(function (err) {
@@ -1602,6 +1542,7 @@ geotab.addin.celDashboard = function () {
         });
         mapDeviceGroups();
         populateVehicleDropdown();
+        buildDeviceInfoMap();
       }).catch(function () {});
 
       // Auto-load on first focus
