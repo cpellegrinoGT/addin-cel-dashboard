@@ -536,24 +536,21 @@ geotab.addin.celDashboard = function () {
       vinCache[d.id] = {
         year: year || "--",
         make: make || "--",
-        vtype: d.vehicleType || d.deviceType || "--",
         engine: d.engineType || "--"
       };
     });
   }
 
   function populateVinDropdowns() {
-    var years = {}, makes = {}, types = {};
+    var years = {}, makes = {};
     Object.keys(vinCache).forEach(function (did) {
       var v = vinCache[did];
       if (v.year && v.year !== "--") years[v.year] = true;
       if (v.make && v.make !== "--") makes[v.make] = true;
-      if (v.vtype && v.vtype !== "--") types[v.vtype] = true;
     });
 
     populateFilterDropdown(els.year, years, "All Years");
     populateFilterDropdown(els.make, makes, "All Makes");
-    populateFilterDropdown(els.vtype, types, "All Types");
   }
 
   function populateFilterDropdown(selectEl, valuesObj, allLabel) {
@@ -572,7 +569,7 @@ geotab.addin.celDashboard = function () {
   }
 
   function getVinInfo(device) {
-    return vinCache[device.id] || { year: "--", make: "--", vtype: "--", engine: "--" };
+    return vinCache[device.id] || { year: "--", make: "--", engine: "--" };
   }
 
   // ── Filtered Devices ───────────────────────────────────────────────────
@@ -582,7 +579,6 @@ geotab.addin.celDashboard = function () {
     var groupId = els.group.value;
     var year = els.year.value;
     var make = els.make.value;
-    var vtype = els.vtype.value;
 
     // Single vehicle shortcut
     if (vehicleId !== "all") {
@@ -600,11 +596,10 @@ geotab.addin.celDashboard = function () {
         if (!inGroup) return false;
       }
 
-      if (year !== "all" || make !== "all" || vtype !== "all") {
+      if (year !== "all" || make !== "all") {
         var vi = getVinInfo(dev);
         if (year !== "all" && String(vi.year) !== year) return false;
         if (make !== "all" && vi.make !== make) return false;
-        if (vtype !== "all" && vi.vtype !== vtype) return false;
       }
 
       return true;
@@ -1065,7 +1060,6 @@ geotab.addin.celDashboard = function () {
         groups: deviceGroupNames[dev.id] || "--",
         year: vi.year,
         make: vi.make,
-        vtype: vi.vtype,
         engine: vi.engine,
         celPct: celPct,
         activeDtcs: activeDtcs,
@@ -1353,7 +1347,6 @@ geotab.addin.celDashboard = function () {
         '<td>' + escapeHtml(r.groups) + '</td>' +
         '<td>' + escapeHtml(String(r.year)) + '</td>' +
         '<td>' + escapeHtml(r.make) + '</td>' +
-        '<td>' + escapeHtml(r.vtype) + '</td>' +
         '<td>' + escapeHtml(r.engine) + '</td>' +
         '<td>' + formatPct(r.celPct) + '</td>' +
         '<td>' + r.activeDtcs + '</td>' +
@@ -1644,7 +1637,6 @@ geotab.addin.celDashboard = function () {
       els.vehicle = $("cel-vehicle");
       els.year = $("cel-year");
       els.make = $("cel-make");
-      els.vtype = $("cel-vtype");
       els.apply = $("cel-apply");
       els.progress = $("cel-progress");
       els.loading = $("cel-loading");
@@ -1714,7 +1706,7 @@ geotab.addin.celDashboard = function () {
 
       // CSV export listeners
       $("cel-unit-export").addEventListener("click", function () {
-        var headers = ["name", "groups", "year", "make", "vtype", "engine", "celPct", "activeDtcs", "repeatDtcs", "lastReported"];
+        var headers = ["name", "groups", "year", "make", "engine", "celPct", "activeDtcs", "repeatDtcs", "lastReported"];
         exportCsv("cel_unit_detail.csv", headers, celData.unitRows);
       });
       $("cel-comm-export").addEventListener("click", function () {
