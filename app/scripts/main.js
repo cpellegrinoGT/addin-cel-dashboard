@@ -1722,7 +1722,12 @@ geotab.addin.celDashboard = function () {
         apiCall("Get", { typeName: "Group", resultsLimit: 5000 }),
         apiCall("Get", { typeName: "DeviceStatusInfo", resultsLimit: 5000 })
       ]).then(function (results) {
-        allDevices = results[0] || [];
+        var now = new Date();
+        allDevices = (results[0] || []).filter(function (d) {
+          // Exclude archived devices (activeTo is set to a past date)
+          if (!d.activeTo) return true;
+          return new Date(d.activeTo) > now;
+        });
         var groups = results[1] || [];
         var statusArr = results[2] || [];
 
@@ -1758,7 +1763,11 @@ geotab.addin.celDashboard = function () {
         apiCall("Get", { typeName: "Device", resultsLimit: 5000 }),
         apiCall("Get", { typeName: "DeviceStatusInfo", resultsLimit: 5000 })
       ]).then(function (results) {
-        allDevices = results[0] || [];
+        var now = new Date();
+        allDevices = (results[0] || []).filter(function (d) {
+          if (!d.activeTo) return true;
+          return new Date(d.activeTo) > now;
+        });
         var statusArr = results[1] || [];
         statusArr.forEach(function (s) {
           if (s.device && s.device.id) {
