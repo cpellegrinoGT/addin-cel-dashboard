@@ -40,6 +40,12 @@ export default function Top10Row({ celData, devices, allDevices }) {
   const { topCel, topDtc, topRecurring } = useMemo(() => {
     if (!celData) return { topCel: [], topDtc: [], topRecurring: [] };
 
+    console.log("[CEL Top10] celData keys:", Object.keys(celData));
+    console.log("[CEL Top10] devices:", devices?.length, "allDevices:", allDevices?.length);
+    console.log("[CEL Top10] allFaults:", (celData.allFaults || []).length);
+    console.log("[CEL Top10] deviceDrivenDays sample:", Object.entries(celData.deviceDrivenDays || {}).slice(0, 3));
+    console.log("[CEL Top10] diagnosticMap keys:", Object.keys(celData.diagnosticMap || {}).length);
+
     const diagMap = celData.diagnosticMap || {};
     const deviceSet = {};
     devices.forEach((d) => {
