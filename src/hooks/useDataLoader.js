@@ -235,6 +235,7 @@ export function useDataLoader() {
           allFaults: faultResult.allFaults,
           trips,
           granularity,
+          diagnosticMap: diagMaps.diagnosticMap,
         };
       } catch (err) {
         if (!abortRef.current.signal.aborted) {

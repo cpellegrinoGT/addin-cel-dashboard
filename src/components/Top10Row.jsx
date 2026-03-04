@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { formatPct } from "../lib/dateUtils.js";
+import { getDiagnosticInfo } from "../lib/diagnosticUtils.js";
 
 function SmallTable({ title, columns, rows }) {
   return (
@@ -39,6 +40,7 @@ export default function Top10Row({ celData, devices, allDevices }) {
   const { topCel, topDtc, topRecurring } = useMemo(() => {
     if (!celData) return { topCel: [], topDtc: [], topRecurring: [] };
 
+    const diagMap = celData.diagnosticMap || {};
     const deviceSet = {};
     devices.forEach((d) => {
       deviceSet[d.id] = true;
@@ -70,16 +72,17 @@ export default function Top10Row({ celData, devices, allDevices }) {
       .sort((a, b) => b.count - a.count);
     const topDtc = dtcArr.slice(0, 10).map((r) => [r.name, String(r.count)]);
 
-    // Top recurring faults
+    // Top recurring faults — use diagnosticMap for code/name lookup
     const codeCount = {};
     const codeNames = {};
     (celData.allFaults || []).forEach((f) => {
       const did = f.device?.id;
       if (!did || !deviceSet[did]) return;
-      const code = f.diagnostic?.code ? f.diagnostic.code.toString() : "--";
+      const diag = getDiagnosticInfo(f, diagMap);
+      const code = diag.code ? diag.code.toString() : "--";
       codeCount[code] = (codeCount[code] || 0) + 1;
-      if (!codeNames[code] && f.diagnostic?.name && f.diagnostic.name !== "--") {
-        codeNames[code] = f.diagnostic.name;
+      if (!codeNames[code] && diag.name && diag.name !== "--") {
+        codeNames[code] = diag.name;
       }
     });
     const codeArr = Object.entries(codeCount)
