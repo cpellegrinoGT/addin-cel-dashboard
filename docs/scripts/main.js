@@ -13,6 +13,7 @@ geotab.addin.celDashboard = function () {
   var MULTI_CALL_BATCH = 50;
   var FAULT_LIMIT = 50000;
   var NOT_REPORTING_DAYS = 3;
+  var DTC_PAGE_SIZE = 100;
 
   // CEL diagnostic names to match
   var CEL_DIAGNOSTIC_NAMES = [
@@ -142,6 +143,8 @@ geotab.addin.celDashboard = function () {
     comm: { col: "daysSince", dir: "desc" }
   };
 
+  var dtcPage = 1;
+
   // ── DOM refs (set during initialize) ───────────────────────────────────
   var els = {};
 
@@ -184,6 +187,15 @@ geotab.addin.celDashboard = function () {
     var div = document.createElement("div");
     div.textContent = str || "";
     return div.innerHTML;
+  }
+
+  function debounce(fn, wait) {
+    var timer;
+    return function () {
+      var ctx = this, args = arguments;
+      clearTimeout(timer);
+      timer = setTimeout(function () { fn.apply(ctx, args); }, wait);
+    };
   }
 
   function getDateRange() {
@@ -574,6 +586,31 @@ geotab.addin.celDashboard = function () {
 
   // ── Filtered Devices ───────────────────────────────────────────────────
 
+  function getDescendantIds(groupId) {
+    var descendants = {};
+    descendants[groupId] = true;
+    var childrenMap = {};
+    Object.keys(allGroups).forEach(function (gid) {
+      var g = allGroups[gid];
+      if (g.parent && g.parent.id) {
+        if (!childrenMap[g.parent.id]) childrenMap[g.parent.id] = [];
+        childrenMap[g.parent.id].push(gid);
+      }
+    });
+    var queue = [groupId];
+    while (queue.length > 0) {
+      var current = queue.shift();
+      var children = childrenMap[current] || [];
+      for (var i = 0; i < children.length; i++) {
+        if (!descendants[children[i]]) {
+          descendants[children[i]] = true;
+          queue.push(children[i]);
+        }
+      }
+    }
+    return descendants;
+  }
+
   function filteredDevices() {
     var vehicleId = els.vehicle.value;
     var groupId = els.group.value;
@@ -585,13 +622,19 @@ geotab.addin.celDashboard = function () {
       return allDevices.filter(function (dev) { return dev.id === vehicleId; });
     }
 
+    // Pre-compute descendant set for group filter
+    var groupSet = null;
+    if (groupId !== "all") {
+      groupSet = getDescendantIds(groupId);
+    }
+
     return allDevices.filter(function (dev) {
-      if (groupId !== "all") {
-        // Check if device belongs to the selected group
+      if (groupSet) {
+        // Check if device belongs to the selected group or any descendant
         var devGroups = dev.groups || [];
         var inGroup = false;
         for (var i = 0; i < devGroups.length; i++) {
-          if (devGroups[i].id === groupId) { inGroup = true; break; }
+          if (groupSet[devGroups[i].id]) { inGroup = true; break; }
         }
         if (!inGroup) return false;
       }
@@ -1237,6 +1280,8 @@ geotab.addin.celDashboard = function () {
     });
 
     // Top 10 Highest DTC Count (per device)
+    var nameMap = {};
+    allDevices.forEach(function (d) { nameMap[d.id] = d.name || d.id; });
     var dtcCount = {};
     celData.allFaults.forEach(function (f) {
       var did = f.device ? f.device.id : null;
@@ -1245,8 +1290,7 @@ geotab.addin.celDashboard = function () {
     });
     var dtcArr = [];
     Object.keys(dtcCount).forEach(function (did) {
-      var d = allDevices.find(function (dv) { return dv.id === did; });
-      dtcArr.push({ name: d ? d.name : did, count: dtcCount[did] });
+      dtcArr.push({ name: nameMap[did] || did, count: dtcCount[did] });
     });
     dtcArr.sort(function (a, b) { return b.count - a.count; });
     renderSmallTable(els.top10Dtc, dtcArr.slice(0, 10), function (r) {
@@ -1293,7 +1337,9 @@ geotab.addin.celDashboard = function () {
 
   // ── DTC Table ─────────────────────────────────────────────────────────
 
-  function renderDtcTable() {
+  function renderDtcTable(resetPage) {
+    if (resetPage !== false) dtcPage = 1;
+
     var rows = celData.dtcRows.slice();
     var stateFilter = els.dtcState.value;
     var searchTerm = els.dtcSearch.value.toLowerCase();
@@ -1310,7 +1356,15 @@ geotab.addin.celDashboard = function () {
     }
 
     sortRows(rows, sortState.dtc);
-    renderTableBody(els.dtcBody, rows, function (r) {
+
+    // Pagination
+    var totalRows = rows.length;
+    var totalPages = Math.max(1, Math.ceil(totalRows / DTC_PAGE_SIZE));
+    if (dtcPage > totalPages) dtcPage = totalPages;
+    var startIdx = (dtcPage - 1) * DTC_PAGE_SIZE;
+    var pageRows = rows.slice(startIdx, startIdx + DTC_PAGE_SIZE);
+
+    renderTableBody(els.dtcBody, pageRows, function (r) {
       var stateClass = "cel-state-" + r.state.toLowerCase();
       var sevClass = "cel-badge " + severityBadgeClass(r.severity);
       return '<td>' + formatDate(r.date) + '</td>' +
@@ -1324,6 +1378,30 @@ geotab.addin.celDashboard = function () {
         '<td>' + escapeHtml(r.effect) + '</td>' +
         '<td>' + escapeHtml(r.action) + '</td>' +
         '<td>' + r.count + '</td>';
+    });
+
+    renderDtcPagination(totalRows, totalPages);
+  }
+
+  function renderDtcPagination(totalRows, totalPages) {
+    var wrap = els.dtcPagination;
+    if (totalPages <= 1) {
+      wrap.style.display = "none";
+      return;
+    }
+    wrap.style.display = "flex";
+    var start = (dtcPage - 1) * DTC_PAGE_SIZE + 1;
+    var end = Math.min(dtcPage * DTC_PAGE_SIZE, totalRows);
+    wrap.innerHTML =
+      '<button class="cel-page-btn" id="cel-dtc-prev"' + (dtcPage <= 1 ? ' disabled' : '') + '>&laquo; Prev</button>' +
+      '<span class="cel-page-info">Showing ' + start + '–' + end + ' of ' + totalRows + '</span>' +
+      '<button class="cel-page-btn" id="cel-dtc-next"' + (dtcPage >= totalPages ? ' disabled' : '') + '>Next &raquo;</button>';
+
+    $("cel-dtc-prev").addEventListener("click", function () {
+      if (dtcPage > 1) { dtcPage--; renderDtcTable(false); }
+    });
+    $("cel-dtc-next").addEventListener("click", function () {
+      if (dtcPage < totalPages) { dtcPage++; renderDtcTable(false); }
     });
   }
 
@@ -1656,6 +1734,7 @@ geotab.addin.celDashboard = function () {
       els.dtcState = $("cel-dtc-state");
       els.dtcSearch = $("cel-dtc-search");
       els.dtcBody = $("cel-dtc-body");
+      els.dtcPagination = $("cel-dtc-pagination");
       els.unitSearch = $("cel-unit-search");
       els.unitBody = $("cel-unit-body");
       els.commStatus = $("cel-comm-status");
@@ -1697,12 +1776,12 @@ geotab.addin.celDashboard = function () {
         if (th) handleSort("comm", th);
       });
 
-      // Search / filter listeners (re-render on input)
+      // Search / filter listeners (debounced for text inputs, immediate for dropdowns)
       els.dtcState.addEventListener("change", renderDtcTable);
-      els.dtcSearch.addEventListener("input", renderDtcTable);
-      els.unitSearch.addEventListener("input", renderUnitTable);
+      els.dtcSearch.addEventListener("input", debounce(renderDtcTable, 250));
+      els.unitSearch.addEventListener("input", debounce(renderUnitTable, 250));
       els.commStatus.addEventListener("change", renderCommTable);
-      els.commSearch.addEventListener("input", renderCommTable);
+      els.commSearch.addEventListener("input", debounce(renderCommTable, 250));
 
       // CSV export listeners
       $("cel-unit-export").addEventListener("click", function () {

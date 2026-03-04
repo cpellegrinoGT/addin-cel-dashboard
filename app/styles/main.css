@@ -561,6 +561,45 @@
   text-decoration: underline;
 }
 
+/* Pagination */
+
+#cel-root .cel-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-top: 1px solid #eee;
+}
+
+#cel-root .cel-page-btn {
+  padding: 5px 14px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  font-size: 13px;
+  cursor: pointer;
+  color: #4a90d9;
+  font-weight: 600;
+  transition: background 0.15s, color 0.15s;
+}
+
+#cel-root .cel-page-btn:hover:not(:disabled) {
+  background: #4a90d9;
+  color: #fff;
+}
+
+#cel-root .cel-page-btn:disabled {
+  color: #aaa;
+  border-color: #ddd;
+  cursor: default;
+}
+
+#cel-root .cel-page-info {
+  font-size: 13px;
+  color: #666;
+}
+
 /* Warning banner */
 
 #cel-root #cel-warning {
