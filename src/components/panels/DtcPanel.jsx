@@ -17,6 +17,7 @@ function sortRows(rows, col, dir) {
 
 export default function DtcPanel({ dtcRows, dateRange, preset }) {
   const [stateFilter, setStateFilter] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [sortCol, setSortCol] = useState("date");
   const [sortDir, setSortDir] = useState("desc");
@@ -26,6 +27,12 @@ export default function DtcPanel({ dtcRows, dateRange, preset }) {
     let rows = dtcRows;
     if (stateFilter !== "all") {
       rows = rows.filter((r) => r.state === stateFilter);
+    }
+    if (categoryFilter !== "all") {
+      rows = rows.filter((r) => {
+        const desc = (r.description || "").toLowerCase();
+        return desc.includes(categoryFilter);
+      });
     }
     if (search) {
       const lower = search.toLowerCase();
@@ -37,7 +44,7 @@ export default function DtcPanel({ dtcRows, dateRange, preset }) {
       );
     }
     return sortRows(rows, sortCol, sortDir);
-  }, [dtcRows, stateFilter, search, sortCol, sortDir]);
+  }, [dtcRows, stateFilter, categoryFilter, search, sortCol, sortDir]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / DTC_PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
@@ -82,6 +89,18 @@ export default function DtcPanel({ dtcRows, dateRange, preset }) {
             <option value="Active">Active</option>
             <option value="Pending">Pending</option>
             <option value="Cleared">Cleared</option>
+          </select>
+        </div>
+        <div className="cel-control-group">
+          <label htmlFor="cel-dtc-category">Category</label>
+          <select
+            id="cel-dtc-category"
+            value={categoryFilter}
+            onChange={(e) => { setCategoryFilter(e.target.value); setPage(1); }}
+          >
+            <option value="all">All</option>
+            <option value="engine">Engine</option>
+            <option value="exhaust">Exhaust</option>
           </select>
         </div>
         <div className="cel-control-group">
