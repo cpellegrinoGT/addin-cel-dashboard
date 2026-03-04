@@ -10,6 +10,11 @@
     queued = [];
   };
 
+  // If the module script already ran and stored its impl, pick it up now
+  if (window.__celImpl) {
+    window.__celReady(window.__celImpl);
+  }
+
   if (typeof geotab === "undefined") { window.geotab = { addin: {} }; }
   if (!geotab.addin) { geotab.addin = {}; }
 

@@ -19,7 +19,7 @@ function waitForRef(maxMs) {
   });
 }
 
-window.__celReady({
+const impl = {
   initialize(freshApi, state, callback) {
     console.log("[CEL] initialize called");
     const container = document.getElementById("cel-root");
@@ -65,4 +65,12 @@ window.__celReady({
       appRef.current.abort();
     }
   },
-});
+};
+
+// Support any execution order: shell.js may or may not have run yet
+if (typeof window.__celReady === "function") {
+  window.__celReady(impl);
+} else {
+  // shell.js hasn't run yet — store impl for it to pick up
+  window.__celImpl = impl;
+}
