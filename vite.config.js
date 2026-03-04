@@ -4,7 +4,7 @@ import { resolve } from "path";
 
 export default defineConfig({
   plugins: [react()],
-  base: "/addin-cel-dashboard/",
+  base: "./",
   root: "src",
   publicDir: "public",
   build: {
