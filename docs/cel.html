@@ -4,10 +4,42 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CEL Dashboard</title>
-  <script type="module" crossorigin src="/addin-cel-dashboard/assets/cel-DQHVV9XI.js"></script>
+  <script type="module" crossorigin src="/addin-cel-dashboard/assets/cel-DCK4J1fo.js"></script>
   <link rel="stylesheet" crossorigin href="/addin-cel-dashboard/assets/cel-BP-PykCk.css">
 </head>
 <body>
   <div id="cel-root"></div>
+  <!-- Register add-in synchronously so MyGeotab finds it immediately -->
+  <script>
+    (function () {
+      var pending = { initialize: null, focus: null, blur: null };
+      var ready = false;
+      var queued = [];
+
+      window.__celReady = function (impl) {
+        pending = impl;
+        ready = true;
+        queued.forEach(function (fn) { fn(); });
+        queued = [];
+      };
+
+      geotab.addin.celDashboard = function () {
+        return {
+          initialize: function (api, state, callback) {
+            if (ready) { pending.initialize(api, state, callback); }
+            else { queued.push(function () { pending.initialize(api, state, callback); }); }
+          },
+          focus: function (api, state) {
+            if (ready) { pending.focus(api, state); }
+            else { queued.push(function () { pending.focus(api, state); }); }
+          },
+          blur: function () {
+            if (ready) { pending.blur(); }
+            else { queued.push(function () { pending.blur(); }); }
+          }
+        };
+      };
+    })();
+  </script>
 </body>
 </html>
