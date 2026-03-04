@@ -6,24 +6,46 @@ const appRef = createRef();
 let root = null;
 let firstFocus = true;
 
+// Poll until appRef.current is set by React, then resolve
+function waitForRef(maxMs) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const check = () => {
+      if (appRef.current) return resolve(appRef.current);
+      if (Date.now() - start > maxMs) return resolve(null);
+      setTimeout(check, 50);
+    };
+    check();
+  });
+}
+
 window.__celReady({
   initialize(freshApi, state, callback) {
+    console.log("[CEL] initialize called");
     const container = document.getElementById("cel-root");
     root = createRoot(container);
     root.render(createElement(App, { ref: appRef }));
+    console.log("[CEL] React render called, waiting for ref…");
 
-    // Wait a tick for React to mount, then initialize foundation data
-    setTimeout(async () => {
-      try {
-        await appRef.current.initializeFoundation(freshApi, state);
-      } catch (err) {
-        console.error("CEL Dashboard init error:", err);
+    waitForRef(10000).then(async (ref) => {
+      if (ref) {
+        console.log("[CEL] ref ready, calling initializeFoundation");
+        try {
+          await ref.initializeFoundation(freshApi, state);
+          console.log("[CEL] initializeFoundation complete");
+        } catch (err) {
+          console.error("[CEL] initializeFoundation error:", err);
+        }
+      } else {
+        console.error("[CEL] ref never became available (10s timeout)");
       }
+      console.log("[CEL] calling callback()");
       callback();
-    }, 0);
+    });
   },
 
   focus(freshApi, state) {
+    console.log("[CEL] focus called, ref:", !!appRef.current);
     if (appRef.current) {
       appRef.current.updateApi(freshApi, state);
     }
@@ -34,7 +56,7 @@ window.__celReady({
       setTimeout(() => {
         const applyBtn = document.getElementById("cel-apply");
         if (applyBtn) applyBtn.click();
-      }, 100);
+      }, 500);
     }
   },
 
