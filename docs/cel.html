@@ -9,47 +9,7 @@
 </head>
 <body>
   <div id="cel-root"></div>
-  <!-- Register add-in synchronously so MyGeotab finds it immediately -->
-  <script>
-    (function () {
-      console.log("[CEL-shell] inline script running");
-      var pending = { initialize: null, focus: null, blur: null };
-      var ready = false;
-      var queued = [];
-
-      window.__celReady = function (impl) {
-        console.log("[CEL-shell] __celReady called, queued:", queued.length);
-        pending = impl;
-        ready = true;
-        queued.forEach(function (fn) { fn(); });
-        queued = [];
-      };
-
-      if (typeof geotab === "undefined") { window.geotab = { addin: {} }; }
-      if (!geotab.addin) { geotab.addin = {}; }
-
-      geotab.addin.celDashboard = function () {
-        console.log("[CEL-shell] celDashboard() factory called by MyGeotab");
-        return {
-          initialize: function (api, state, callback) {
-            console.log("[CEL-shell] initialize called, ready:", ready);
-            if (ready) { pending.initialize(api, state, callback); }
-            else { queued.push(function () { pending.initialize(api, state, callback); }); }
-          },
-          focus: function (api, state) {
-            console.log("[CEL-shell] focus called, ready:", ready);
-            if (ready) { pending.focus(api, state); }
-            else { queued.push(function () { pending.focus(api, state); }); }
-          },
-          blur: function () {
-            console.log("[CEL-shell] blur called, ready:", ready);
-            if (ready) { pending.blur(); }
-            else { queued.push(function () { pending.blur(); }); }
-          }
-        };
-      };
-      console.log("[CEL-shell] geotab.addin.celDashboard registered");
-    })();
-  </script>
+  <!-- Register add-in synchronously (must be external — MyGeotab CSP blocks inline scripts) -->
+  <script src="./shell.js"></script>
 </body>
 </html>
